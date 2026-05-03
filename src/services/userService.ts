@@ -95,3 +95,20 @@ export async function getUserRole(discordUserId: string): Promise<string | null>
     const user = await getUserByDiscordId(discordUserId);
     return user?.role ?? null;
 }
+
+export async function getUsersByIds(userIds: string[]): Promise<UserRecord[]> {
+    if (userIds.length === 0) {
+        return [];
+    }
+
+    const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .in('user_id', userIds);
+
+    if (error) {
+        throw new Error(`批次查詢使用者失敗：${error.message}`);
+    }
+
+    return (data ?? []) as UserRecord[];
+}
