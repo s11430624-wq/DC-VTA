@@ -104,8 +104,10 @@ Required columns:
 ```text
 user_id text
 question_id integer or bigint
-selected_option text
+selected_option text nullable
 is_correct boolean
+answer_text text nullable
+status text not null default 'graded' (pending|graded)
 created_at optional
 updated_at optional
 ```
@@ -130,10 +132,44 @@ unique (user_id, question_id);
 
 If the second statement fails because the constraint already exists or duplicate rows already exist, do not force it. Remove duplicate `quiz_responses` rows first, then add the constraint.
 
+## Supabase Migrations (Recommended Order)
+
+Use the SQL files in `supabase/migrations`:
+
+1. `20260504_001_schema_baseline_safe.sql`
+- Adds `users.platform`
+- Adds `quiz_responses.answer_text`
+- Adds `quiz_responses.status default 'graded'`
+- Adds `quiz_responses_status_check` (`pending|graded`) if missing
+
+2. `20260504_002_quiz_response_uniqueness.sql`
+- Checks duplicates for `(user_id, question_id)`
+- Adds `quiz_responses_user_question_unique` only when safe
+- If duplicates exist, it skips and outputs a notice instead of failing
+
+3. `20260504_003_discord_channel_groups.sql`
+- Makes `groups.group_id` the canonical Discord channel id key for the bot
+- Adds uniqueness on `groups.group_id`
+- Adds uniqueness on `group_members (group_id, user_id)`
+- Adds an index on `quiz_responses.group_id`
+- Legacy non-Discord `group_id` rows remain for history only
+
 ## Start
 
 ```powershell
-npx ts-node src/index.ts
+npm run start
+```
+
+Development mode:
+
+```powershell
+npm run dev
+```
+
+TypeScript verification:
+
+```powershell
+npm run typecheck
 ```
 
 ## Slash Command Registration
@@ -189,6 +225,19 @@ response_id=作答ID
 ```
 
 If the teacher is not logged in, the dashboard keeps the target state and opens the grading tab after login.
+
+## Group Integration
+
+Discord group mode is now canonicalized to `groups.group_id = Discord channelId`.
+
+When the bot first touches a Discord text channel in group mode, it auto-creates or refreshes that channel's row in `groups` and then does two sync steps automatically:
+
+- `/open id` updates `groups.current_question_id`
+- student answers write `quiz_responses.group_id`
+
+The bot also inserts the answering student into `group_members` if they are not already present.
+
+Legacy LINE-style `groups.group_id` values such as `C...` are kept only for historical data and are no longer used by the Discord bot.
 
 ## Deployment Notes
 

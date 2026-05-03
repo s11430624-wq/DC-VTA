@@ -39,13 +39,13 @@ npm install
 2. 編譯檢查
 
 ```powershell
-npx tsc --noEmit
+npm run typecheck
 ```
 
 3. 啟動 bot
 
 ```powershell
-npx ts-node src/index.ts
+npm run start
 ```
 
 4. 確認終端出現：
@@ -64,12 +64,16 @@ npx ts-node src/index.ts
 5. `/check id:...`
 6. `/grading_queue`
 7. `/grade_link id:...`
+8. 參考 [SMOKE_TEST.md](</c:/上課檔案/N8N/docs/SMOKE_TEST.md>) 跑完整回歸
 
 ## 風險點
 
 - 不要把 `SUPABASE_SERVICE_ROLE_KEY` 放到前端
 - 改 `.env` 後一定要重啟 bot
 - 如果正式前端網址變了，要同步更新 `FRONTEND_BASE_URL`
+- 如果要使用群組模式，先跑 `20260504_003_discord_channel_groups.sql`
+- Discord bot 現在會以 `groups.group_id = Discord channelId` 自動建立或更新群組列
+- 舊的 LINE 風格 `group_id` 只保留歷史用途，不再參與 Discord bot 流程
 
 ## 回滾點
 

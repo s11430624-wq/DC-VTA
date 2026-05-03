@@ -1,7 +1,9 @@
-import { getRecentChatMessages } from './chatMemoryService';
+import { appendChatMessage, getRecentChatMessages } from './chatMemoryService';
+import { generateQuestionDraft, reviseQuestionDraft } from './aiQuestionService';
+import { clearRevisionTarget, getRevisionTarget } from './agentRevisionStateService';
 import { getQuestionById, getRecentQuestions } from './questionService';
-import { getUserByDiscordId } from './userService';
-import { getAllQuizResponses } from './quizService';
+import { getUserByDiscordId, getUsersByIds } from './userService';
+import { getAllQuizResponses, getUserQuizStats, isRankEligibleResponse } from './quizService';
 
 type AskAgentInput = {
     userId: string;
@@ -9,10 +11,38 @@ type AskAgentInput = {
     sessionId: string;
 };
 
+type DraftPreview = {
+    draftId: string;
+    category: string;
+    content: string;
+    options: string[];
+    correctAnswer: 'A' | 'B' | 'C' | 'D';
+    explanation: string;
+};
+
+export type AskAgentResult = {
+    answer: string;
+    draftPreview?: DraftPreview;
+};
+
+export const buildAgentSessionId = (userId: string, channelId: string) => `${userId}:${channelId}`;
+
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
+const isGenerationIntent = (question: string) => /(出題|生成.*題|產生.*題|題目草稿|出一題|幫我寫一題|generate.*question)/i.test(question);
+const isBatchGenerationIntent = (question: string) => /(出.{0,4}[2-5]題|[2-5]題.*出題|批次出題|一次出.*題|多題題目)/i.test(question);
+
+const toDraftPreview = (draft: Awaited<ReturnType<typeof generateQuestionDraft>>): DraftPreview => ({
+    draftId: draft.draftId,
+    category: draft.payload.category,
+    content: draft.payload.content,
+    options: draft.payload.options,
+    correctAnswer: draft.payload.correct_answer,
+    explanation: draft.payload.explanation,
+});
+
 const summarizeRanking = async (limit = 5) => {
-    const responses = await getAllQuizResponses();
+    const responses = (await getAllQuizResponses()).filter(isRankEligibleResponse);
     const byUser = new Map<string, { total: number; correct: number }>();
 
     for (const response of responses) {
@@ -32,7 +62,14 @@ const summarizeRanking = async (limit = 5) => {
         .sort((a, b) => b.correct - a.correct || b.accuracy - a.accuracy || b.total - a.total)
         .slice(0, limit);
 
-    return ranked;
+    const users = await getUsersByIds(ranked.map((item) => item.userId));
+    const usersById = new Map(users.map((user) => [user.user_id, user]));
+
+    return ranked.map((item) => ({
+        ...item,
+        displayName: usersById.get(item.userId)?.display_name ?? '未知使用者',
+        studentId: usersById.get(item.userId)?.student_id ?? '無學號',
+    }));
 };
 
 const runReadOnlyTools = async (userId: string, question: string) => {
@@ -45,6 +82,13 @@ const runReadOnlyTools = async (userId: string, question: string) => {
             me
                 ? `我的資料: 姓名=${me.display_name ?? '未設定'}, 學號=${me.student_id ?? '未設定'}, 身分=${me.role ?? '未設定'}`
                 : '我的資料: 尚未綁定',
+        );
+    }
+
+    if (q.includes('答對') || q.includes('成績') || q.includes('答題統計') || q.includes('我的分數')) {
+        const stats = await getUserQuizStats(userId);
+        outputs.push(
+            `我的作答統計: 答對=${stats.correctCount}, 作答=${stats.totalAnswered}, 答錯=${stats.wrongCount}, 答對率=${stats.accuracyPercent}%`,
         );
     }
 
@@ -70,7 +114,7 @@ const runReadOnlyTools = async (userId: string, question: string) => {
         const rank = await summarizeRanking(5);
         outputs.push(
             `排行榜: ${
-                rank.map((row, index) => `${index + 1}.${row.userId}(${row.correct}/${row.total},${row.accuracy}%)`).join(' | ') || '無資料'
+                rank.map((row, index) => `${index + 1}.${row.displayName}(${row.studentId}) ${row.correct}/${row.total},${row.accuracy}%`).join(' | ') || '無資料'
             }`,
         );
     }
@@ -78,10 +122,74 @@ const runReadOnlyTools = async (userId: string, question: string) => {
     return outputs;
 };
 
-export async function askAgent(input: AskAgentInput): Promise<string> {
+export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
         throw new Error('缺少 GEMINI_API_KEY');
+    }
+
+    await appendChatMessage({
+        session_id: input.sessionId,
+        user_id: input.userId,
+        role: 'user',
+        content: input.question,
+    });
+
+    const me = await getUserByDiscordId(input.userId);
+    const isTeacher = me?.role === 'teacher';
+    const revisionTarget = await getRevisionTarget(input.sessionId);
+
+    if (isTeacher && isBatchGenerationIntent(input.question)) {
+        const answer = '這看起來是多題出題需求。請改用 /batch_generate prompt:你的需求 count:2到5，這樣可以一次預覽並整批建立。';
+        await appendChatMessage({
+            session_id: input.sessionId,
+            user_id: input.userId,
+            role: 'assistant',
+            content: answer,
+        });
+        return { answer };
+    }
+
+    if (!isTeacher && (isGenerationIntent(input.question) || isBatchGenerationIntent(input.question))) {
+        const answer = '學生模式的 /ask 只提供課程問答與個人成績查詢，不提供出題或建立題目。若需要出題，請由老師帳號使用 /ask 或 /batch_generate。';
+        await appendChatMessage({
+            session_id: input.sessionId,
+            user_id: input.userId,
+            role: 'assistant',
+            content: answer,
+        });
+        return { answer };
+    }
+
+    if (isTeacher && revisionTarget) {
+        const revisedDraft = await reviseQuestionDraft(revisionTarget.draftId, input.userId, input.question);
+        await clearRevisionTarget(input.sessionId);
+        const answer = '已依照你的修改要求重製草稿，請確認是否建立。';
+        await appendChatMessage({
+            session_id: input.sessionId,
+            user_id: input.userId,
+            role: 'assistant',
+            content: answer,
+        });
+        return {
+            answer,
+            draftPreview: toDraftPreview(revisedDraft),
+        };
+    }
+
+    if (isTeacher && isGenerationIntent(input.question)) {
+        const draft = await generateQuestionDraft(input.userId, input.question);
+        const answer = '已根據你的需求產生題目草稿，請確認是否建立。';
+        await appendChatMessage({
+            session_id: input.sessionId,
+            user_id: input.userId,
+            role: 'assistant',
+            content: answer,
+        });
+        return {
+            answer,
+            draftPreview: toDraftPreview(draft),
+        };
     }
 
     const memory = await getRecentChatMessages(input.sessionId, 8);
@@ -129,9 +237,21 @@ export async function askAgent(input: AskAgentInput): Promise<string> {
     const answer = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
     if (!answer) {
-        return '我目前沒有足夠資料回答，請換個問法或指定題號。';
+        const fallback = '我目前沒有足夠資料回答，請換個問法或指定題號。';
+        await appendChatMessage({
+            session_id: input.sessionId,
+            user_id: input.userId,
+            role: 'assistant',
+            content: fallback,
+        });
+        return { answer: fallback };
     }
 
-    return answer;
+    await appendChatMessage({
+        session_id: input.sessionId,
+        user_id: input.userId,
+        role: 'assistant',
+        content: answer,
+    });
+    return { answer };
 }
-

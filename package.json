@@ -4,7 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
+    "start": "ts-node src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck",
+    "test": "npm run typecheck"
   },
   "keywords": [],
   "author": "",

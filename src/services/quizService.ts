@@ -3,6 +3,7 @@ import { supabase } from './supabase';
 export type QuizResponse = {
     user_id: string;
     question_id: number;
+    group_id?: string | null;
     selected_option: string | null;
     is_correct: boolean;
     answer_text?: string | null;
@@ -15,6 +16,10 @@ export type UserQuizStats = {
     wrongCount: number;
     accuracyPercent: number;
 };
+
+export function isRankEligibleResponse(response: QuizResponse): boolean {
+    return response.status !== 'pending';
+}
 
 export async function getExistingResponse(
     userId: string,
@@ -41,6 +46,7 @@ export async function upsertQuizResponse(data: QuizResponse): Promise<{ response
         const { error } = await supabase
             .from('quiz_responses')
             .update({
+                group_id: data.group_id ?? null,
                 selected_option: data.selected_option,
                 is_correct: data.is_correct,
                 answer_text: data.answer_text ?? null,
@@ -63,6 +69,7 @@ export async function upsertQuizResponse(data: QuizResponse): Promise<{ response
         .from('quiz_responses')
         .insert({
             ...data,
+            group_id: data.group_id ?? null,
             answer_text: data.answer_text ?? null,
             status: data.status ?? 'graded',
         })
@@ -119,7 +126,7 @@ export async function getPendingQuizResponses(): Promise<QuizResponse[]> {
 
 export async function getUserQuizStats(userId: string): Promise<UserQuizStats> {
     const responses = await getAllQuizResponses();
-    const userResponses = responses.filter((response) => response.user_id === userId);
+    const userResponses = responses.filter((response) => response.user_id === userId && isRankEligibleResponse(response));
     const correctCount = userResponses.filter((response) => response.is_correct).length;
     const totalAnswered = userResponses.length;
 

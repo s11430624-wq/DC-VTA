@@ -26,12 +26,21 @@ import {
     discardQuestionBatchDraft,
     generateQuestionBatchDraft,
 } from './services/batchQuestionService';
+import { ensureDiscordChannelGroup, ensureGroupMember, setCurrentQuestionForGroup } from './services/groupService';
 import { addMultipleChoiceQuestion, createShortAnswerQuestion, getQuestionById, getRecentQuestions } from './services/questionService';
-import { getAllQuizResponses, getPendingQuizResponses, getResponsesByQuestionId, getUserQuizStats, QuizResponse, upsertQuizResponse } from './services/quizService';
+import {
+    getAllQuizResponses,
+    getPendingQuizResponses,
+    getResponsesByQuestionId,
+    getUserQuizStats,
+    isRankEligibleResponse,
+    QuizResponse,
+    upsertQuizResponse,
+} from './services/quizService';
 import { getUserByDiscordId, getUsersByIds, linkStudent, UserRecord } from './services/userService';
 import { formatError, safeReply } from './utils/errorHandler';
 import { parseAnswerCustomId } from './utils/parseCustomId';
-import { requireTeacher } from './utils/roleGuard';
+import { isTeacher, requireTeacher } from './utils/roleGuard';
 
 // 載入環境變數
 dotenv.config();
@@ -496,6 +505,35 @@ const getLimitedRankCount = (value: number | null) => {
     return Math.max(1, Math.min(20, value));
 };
 
+const getChannelGroupName = (
+    channel: unknown,
+    channelId: string | null,
+) => {
+    const channelName = (
+        channel
+        && typeof channel === 'object'
+        && 'name' in channel
+        && typeof (channel as { name?: unknown }).name === 'string'
+    )
+        ? (channel as { name: string }).name.trim()
+        : null;
+    return channelName && channelName.length > 0
+        ? channelName
+        : (channelId ? `discord-${channelId}` : null);
+};
+
+const resolveChannelGroupId = async (
+    channelId: string | null,
+    channel: unknown,
+) => {
+    if (!channelId) {
+        return null;
+    }
+
+    const group = await ensureDiscordChannelGroup(channelId, getChannelGroupName(channel, channelId));
+    return group?.group_id ?? null;
+};
+
 const getQuestionExplanation = (metadata: QuestionMetadata | string | null) => {
     const parsed = parseQuestionMetadata(metadata);
     if (!parsed.ok) return null;
@@ -615,10 +653,23 @@ const getBatchPreviewText = (questions: Array<{
     '如果可以，按「全部建立」。如果不要這批草稿，按「全部作廢」。',
 ].join('\n');
 
+const hasValidDraftPreview = (draft: {
+    category: string;
+    content: string;
+    options: string[];
+    correctAnswer: 'A' | 'B' | 'C' | 'D';
+}) => (
+    draft.category.trim().length > 0
+    && draft.content.trim().length > 0
+    && draft.options.length === 4
+    && draft.options.every((option) => option.trim().length > 0)
+    && ['A', 'B', 'C', 'D'].includes(draft.correctAnswer)
+);
+
 const buildRankingStats = (responses: QuizResponse[]): RankingStat[] => {
     const statsByUserId = new Map<string, RankingStat>();
 
-    for (const response of responses) {
+    for (const response of responses.filter(isRankEligibleResponse)) {
         const current = statsByUserId.get(response.user_id) ?? {
             userId: response.user_id,
             totalAnswered: 0,
@@ -767,9 +818,14 @@ const handleAnswerButton = async (interaction: ButtonInteraction) => {
 
     const selectedOption = parsedCustomId.selectedOption;
     const isCorrect = selectedOption === correctAnswer;
+    const groupId = await resolveChannelGroupId(interaction.channelId, interaction.channel);
+    if (groupId) {
+        await ensureGroupMember(groupId, interaction.user.id);
+    }
     const { updated } = await upsertQuizResponse({
         user_id: interaction.user.id,
         question_id: question.id,
+        group_id: groupId,
         selected_option: selectedOption,
         is_correct: isCorrect,
     });
@@ -903,7 +959,7 @@ const handleBatchDraftButton = async (interaction: ButtonInteraction) => {
 };
 
 // 當機器人準備就緒時觸發
-client.once('ready', async () => {
+client.once('clientReady', async () => {
     console.log(`✅ 機器人已上線！登入身分：${client.user?.tag}`);
 
     // 向 Discord 註冊 Slash Commands
@@ -989,9 +1045,15 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
+            const groupId = await resolveChannelGroupId(interaction.channelId, interaction.channel);
+            if (groupId) {
+                await ensureGroupMember(groupId, interaction.user.id);
+            }
+
             await upsertQuizResponse({
                 user_id: interaction.user.id,
                 question_id: questionId,
+                group_id: groupId,
                 selected_option: null,
                 is_correct: false,
                 answer_text: answerText,
@@ -1013,8 +1075,35 @@ client.on('interactionCreate', async (interaction) => {
     try {
         // 處理 /help 指令
         if (chatInteraction.commandName === 'help') {
+            const teacher = await isTeacher(chatInteraction);
+            const studentCommands = [
+                '`/help` - 顯示此訊息',
+                '`/link student_id name` - 綁定學號',
+                '`/me` - 查詢自己的綁定資料',
+                '`/rank limit` - 顯示排行榜',
+                '`/ask prompt` - 向助教提問或查詢自己的成績',
+                '`/clear_memory` - 清除目前頻道中的 Agent 記憶與未確認題目草稿',
+            ];
+            const teacherCommands = [
+                '`/list` - 顯示最近 10 筆題庫',
+                '`/question id` - 查看題目詳情',
+                '`/add content` - 老師新增選擇題',
+                '`/add_short content rubric` - 老師新增短答題',
+                '`/open id` - 老師開放題目',
+                '`/check id` - 老師查看答題統計',
+                '`/grading_queue` - 老師查看待批改簡答清單',
+                '`/grade_link id` - 老師取得指定短答題批改連結',
+                '`/batch_generate prompt count` - 老師批次產生 2 到 5 題草稿',
+            ];
+
             await chatInteraction.reply({
-                content: '✅ **VTA Discord Bot 已成功切換為 Node.js 程式碼模式！**\n\n可用指令：\n`/help` - 顯示此訊息\n`/link student_id name` - 綁定學號\n`/me` - 查詢自己的綁定資料\n`/list` - 顯示最近 10 筆題庫\n`/question id` - 查看題目詳情\n`/add content` - 老師新增選擇題\n`/add_short content rubric` - 老師新增短答題\n`/open id` - 老師開放題目\n`/check id` - 老師查看答題統計\n`/grading_queue` - 老師查看待批改簡答清單\n`/grade_link id` - 老師取得指定短答題批改連結\n`/rank limit` - 顯示排行榜\n`/ask prompt` - 向 Agent 發問或請老師出題\n`/batch_generate prompt count` - 老師批次產生 2 到 5 題草稿\n`/clear_memory` - 清除目前頻道中的 Agent 記憶與未確認題目草稿',
+                content: [
+                    '✅ **VTA Discord Bot 已成功切換為 Node.js 程式碼模式！**',
+                    '',
+                    '可用指令：',
+                    ...studentCommands,
+                    ...(teacher ? teacherCommands : []),
+                ].join('\n'),
                 ephemeral: false // 設為 true 則只有指令發送者看得到
             });
             return;
@@ -1058,6 +1147,8 @@ client.on('interactionCreate', async (interaction) => {
 
         // 處理 /list 指令
         if (chatInteraction.commandName === 'list') {
+            if (!(await requireTeacher(chatInteraction))) return;
+
             const questions = await getRecentQuestions(10);
 
             if (questions.length === 0) {
@@ -1084,6 +1175,8 @@ client.on('interactionCreate', async (interaction) => {
 
         // 處理 /question 指令
         if (chatInteraction.commandName === 'question') {
+            if (!(await requireTeacher(chatInteraction))) return;
+
             const id = chatInteraction.options.getInteger('id', true);
             const question = await getQuestionById(id);
 
@@ -1144,6 +1237,11 @@ client.on('interactionCreate', async (interaction) => {
             if (!chatInteraction.channel || !('send' in chatInteraction.channel)) {
                 await safeReply(chatInteraction, '無法取得目前頻道，請在伺服器文字頻道中使用 /open。', true);
                 return;
+            }
+
+            const groupId = await resolveChannelGroupId(chatInteraction.channelId, chatInteraction.channel);
+            if (groupId) {
+                await setCurrentQuestionForGroup(groupId, question.id);
             }
 
             if (question.question_type === 'multiple_choice') {
@@ -1321,11 +1419,16 @@ client.on('interactionCreate', async (interaction) => {
             await chatInteraction.deferReply({ ephemeral: true });
             const result = await askAgent({
                 userId: chatInteraction.user.id,
-                channelId: chatInteraction.channelId,
-                prompt,
+                question: prompt,
+                sessionId: buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId),
             });
 
             if (result.draftPreview) {
+                if (!hasValidDraftPreview(result.draftPreview)) {
+                    await safeReply(chatInteraction, '❌ 題目草稿格式不完整，這次不會建立。請重新描述需求再試一次。', true);
+                    return;
+                }
+
                 const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
                         .setCustomId(`approve_draft:${result.draftPreview.draftId}`)
