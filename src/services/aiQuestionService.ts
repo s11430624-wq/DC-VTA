@@ -345,7 +345,11 @@ export async function reviseQuestionDraft(
     return revisedDraft;
 }
 
-export async function approveQuestionDraft(draftId: string, userId: string): Promise<QuestionRecord> {
+export async function approveQuestionDraft(
+    draftId: string,
+    userId: string,
+    categoryOverride?: string,
+): Promise<QuestionRecord> {
     const draft = await getDraftById(draftId);
 
     if (!draft || draft.userId !== userId) {
@@ -354,7 +358,7 @@ export async function approveQuestionDraft(draftId: string, userId: string): Pro
 
     const question = await createMultipleChoiceQuestion({
         content: draft.payload.content,
-        category: draft.payload.category,
+        category: categoryOverride ?? draft.payload.category,
         options: draft.payload.options,
         correctAnswer: draft.payload.correct_answer,
         explanation: draft.payload.explanation,

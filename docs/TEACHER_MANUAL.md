@@ -127,7 +127,7 @@
 先確認：
 
 - Discord 有老師身分組
-- 或資料庫 `users.role = 'teacher'`
+- `TEACHER_ROLE_ID` 設定的是正確的 Discord 老師身分組
 
 ## 建議上課前檢查
 

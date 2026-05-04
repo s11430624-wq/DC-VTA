@@ -1,9 +1,11 @@
 import type { ChatInputCommandInteraction } from 'discord.js';
-import { getUserRole } from '../services/userService';
+import { getTeacherRoleIdForGuild } from '../services/guildSettingsService';
 import { safeReply } from './errorHandler';
 
-const hasDiscordTeacherRole = (interaction: ChatInputCommandInteraction) => {
-    const teacherRoleId = process.env.TEACHER_ROLE_ID;
+const hasDiscordTeacherRole = async (interaction: ChatInputCommandInteraction) => {
+    const teacherRoleId = interaction.guildId
+        ? await getTeacherRoleIdForGuild(interaction.guildId)
+        : process.env.TEACHER_ROLE_ID ?? null;
     const memberRoles = interaction.member?.roles;
 
     if (!teacherRoleId || !memberRoles || Array.isArray(memberRoles)) {
@@ -18,14 +20,7 @@ const hasDiscordTeacherRole = (interaction: ChatInputCommandInteraction) => {
 };
 
 export async function isTeacher(interaction: ChatInputCommandInteraction): Promise<boolean> {
-    const discordRoleResult = hasDiscordTeacherRole(interaction);
-
-    if (discordRoleResult !== null) {
-        return discordRoleResult;
-    }
-
-    const userRole = await getUserRole(interaction.user.id);
-    return userRole === 'teacher';
+    return (await hasDiscordTeacherRole(interaction)) === true;
 }
 
 export async function requireTeacher(interaction: ChatInputCommandInteraction): Promise<boolean> {

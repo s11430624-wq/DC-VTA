@@ -30,8 +30,6 @@ Student/general commands:
 - `/help`
 - `/link student_id name`
 - `/me`
-- `/list`
-- `/question id`
 - `/rank [limit]`
 - `/ask prompt`
 - `/clear_memory`
@@ -88,7 +86,6 @@ GEMINI_API_KEY=
 GEMINI_MODEL=
 QUESTION_MODEL=
 TEACHER_ROLE_ID=
-STUDENT_ROLE_ID=
 FRONTEND_BASE_URL=
 ```
 
@@ -107,6 +104,7 @@ Rules:
 4. Keep reply visibility intentional:
    - private data/results => `ephemeral: true`
    - general ranking => public allowed
+5. Teacher authorization trusts only the Discord role `TEACHER_ROLE_ID`; `users.role` is not a bot permission source.
 
 ## Regression Checklist (Run Every Iteration)
 

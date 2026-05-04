@@ -58,10 +58,10 @@ export async function getQuestionById(id: number): Promise<QuestionRecord | null
     return data as QuestionRecord | null;
 }
 
-export async function addMultipleChoiceQuestion(content: string): Promise<QuestionRecord> {
+export async function addMultipleChoiceQuestion(content: string, category?: string): Promise<QuestionRecord> {
     return createMultipleChoiceQuestion({
         content,
-        category: '一般',
+        category: category ?? '一般',
         options: ['選項A', '選項B', '選項C', '選項D'],
         correctAnswer: 'A',
         explanation: '',

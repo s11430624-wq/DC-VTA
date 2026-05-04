@@ -9,7 +9,7 @@ Run this checklist after any bot logic change, deployment, or environment update
 - Bot is running.
 - Slash commands are registered successfully.
 - Supabase is reachable.
-- Teacher account has teacher permissions.
+- Teacher account has the Discord role identified by `TEACHER_ROLE_ID`.
 - Student account is available for real answer flow testing.
 
 ## Start
@@ -65,19 +65,24 @@ Expected startup logs:
 - Teacher-only.
 - Confirm question detail rendering works for both multiple choice and short answer.
 
-9. `/open id`
+9. `/open id [duration_minutes]`
 - Teacher-only.
+- Confirm custom open duration works when specified.
 - For multiple choice, confirm embed + A/B/C/D buttons are posted.
 - For short answer, confirm embed + "提交短答" button are posted.
 
 10. Student multiple-choice answer
 - Click one answer button.
 - Confirm ephemeral result shows correctness, explanation, and personal stats.
+- Confirm second submission for the same question is rejected.
+- Confirm submission after the open window expires is rejected.
 
 11. Student short-answer submission
 - Click "提交短答".
 - Submit text through modal.
 - Confirm ephemeral success reply.
+- Confirm second submission for the same question is rejected.
+- Confirm submission after the open window expires is rejected.
 
 12. `/check id`
 - Teacher-only.
@@ -113,6 +118,8 @@ Expected startup logs:
 - Student must not use `/list` or `/question`
 - Student `/ask` must not enter question-generation flow
 - Teacher permission gating on `/add`, `/add_short`, `/open`, `/check`, `/grading_queue`, `/grade_link`, `/batch_generate`
+- Each student can submit only one answer per question
+- `quiz_responses.reaction_time` is written in seconds
 - Pending short answers do not count toward ranking or personal correctness stats
 - Discord channels used by the bot create or refresh `groups.group_id = channelId`
 - Group-linked channels update `groups.current_question_id` when `/open` is used

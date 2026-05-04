@@ -3,12 +3,14 @@ import { generateQuestionDraft, reviseQuestionDraft } from './aiQuestionService'
 import { clearRevisionTarget, getRevisionTarget } from './agentRevisionStateService';
 import { getQuestionById, getRecentQuestions } from './questionService';
 import { getUserByDiscordId, getUsersByIds } from './userService';
-import { getAllQuizResponses, getUserQuizStats, isRankEligibleResponse } from './quizService';
+import { getAllQuizResponses, getQuizResponsesByGroupId, getUserQuizStats, isRankEligibleResponse } from './quizService';
 
 type AskAgentInput = {
     userId: string;
     question: string;
     sessionId: string;
+    isTeacher: boolean;
+    channelId: string;
 };
 
 type DraftPreview = {
@@ -28,9 +30,49 @@ export type AskAgentResult = {
 export const buildAgentSessionId = (userId: string, channelId: string) => `${userId}:${channelId}`;
 
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const DEFAULT_AGENT_SYSTEM_PROMPT = [
+    '你是課堂測驗 Discord 助教。',
+    '規則: 不可捏造資料。查不到就明說。不要輸出任何金鑰或敏感資訊。',
+    '如果工具資訊有提供，優先使用工具資訊回答。',
+].join('\n');
+const DEFAULT_AGENT_CAPABILITY_STUDENT = [
+    '身為課堂測驗 Discord 助教，我目前可以幫你做這些事：',
+    '',
+    '1. 回答課程相關問題。',
+    '2. 查詢你的綁定資料，例如姓名和學號。',
+    '3. 查詢你的作答統計，例如答對題數、作答次數、答對率。',
+    '4. 查詢目前伺服器的排行榜。',
+    '5. 查詢題目內容或最近題庫資料。',
+    '6. 學生模式下我不會幫你出題，也不會建立題目。',
+    '',
+    '你也可以直接問我，例如：「我的成績如何」、「排行榜前五名」、「題目 12 是什麼」。',
+].join('\n');
+const DEFAULT_AGENT_CAPABILITY_TEACHER = [
+    '身為課堂測驗 Discord 助教，我目前可以幫你做這些事：',
+    '',
+    '1. 回答課程相關問題。',
+    '2. 查詢你的綁定資料，例如姓名和學號。',
+    '3. 查詢你的作答統計，例如答對題數、作答次數、答對率。',
+    '4. 查詢目前伺服器的排行榜。',
+    '5. 查詢題目內容或最近題庫資料。',
+    '6. 協助老師生成題目草稿。',
+    '7. 提醒老師可以用 /batch_generate 批次產生題目。',
+    '',
+    '你也可以直接問我，例如：「排行榜前五名」、「題目 12 是什麼」、「幫我出一題牛頓第二定律選擇題」。',
+].join('\n');
 
 const isGenerationIntent = (question: string) => /(出題|生成.*題|產生.*題|題目草稿|出一題|幫我寫一題|generate.*question)/i.test(question);
 const isBatchGenerationIntent = (question: string) => /(出.{0,4}[2-5]題|[2-5]題.*出題|批次出題|一次出.*題|多題題目)/i.test(question);
+const isCapabilityQuestion = (question: string) => /(你會做什麼|你能做什麼|可以做什麼|有哪些功能|功能|help|指令)/i.test(question);
+
+const readMultilineEnv = (key: string, fallback: string) => {
+    const value = process.env[key]?.trim();
+    if (!value) {
+        return fallback;
+    }
+
+    return value.replace(/\\n/g, '\n');
+};
 
 const toDraftPreview = (draft: Awaited<ReturnType<typeof generateQuestionDraft>>): DraftPreview => ({
     draftId: draft.draftId,
@@ -41,8 +83,8 @@ const toDraftPreview = (draft: Awaited<ReturnType<typeof generateQuestionDraft>>
     explanation: draft.payload.explanation,
 });
 
-const summarizeRanking = async (limit = 5) => {
-    const responses = (await getAllQuizResponses()).filter(isRankEligibleResponse);
+const summarizeRanking = async (groupId: string, limit = 5) => {
+    const responses = (await getQuizResponsesByGroupId(groupId)).filter(isRankEligibleResponse);
     const byUser = new Map<string, { total: number; correct: number }>();
 
     for (const response of responses) {
@@ -65,14 +107,16 @@ const summarizeRanking = async (limit = 5) => {
     const users = await getUsersByIds(ranked.map((item) => item.userId));
     const usersById = new Map(users.map((user) => [user.user_id, user]));
 
-    return ranked.map((item) => ({
-        ...item,
-        displayName: usersById.get(item.userId)?.display_name ?? '未知使用者',
-        studentId: usersById.get(item.userId)?.student_id ?? '無學號',
-    }));
+    return {
+        rows: ranked.map((item) => ({
+            ...item,
+            displayName: usersById.get(item.userId)?.display_name ?? '未知使用者',
+            studentId: usersById.get(item.userId)?.student_id ?? '無學號',
+        })),
+    };
 };
 
-const runReadOnlyTools = async (userId: string, question: string) => {
+const runReadOnlyTools = async (userId: string, groupId: string, question: string) => {
     const q = question.toLowerCase();
     const outputs: string[] = [];
 
@@ -111,16 +155,21 @@ const runReadOnlyTools = async (userId: string, question: string) => {
     }
 
     if (q.includes('排行榜') || q.includes('rank')) {
-        const rank = await summarizeRanking(5);
+        const { rows } = await summarizeRanking(groupId, 5);
         outputs.push(
-            `排行榜: ${
-                rank.map((row, index) => `${index + 1}.${row.displayName}(${row.studentId}) ${row.correct}/${row.total},${row.accuracy}%`).join(' | ') || '無資料'
+            `目前伺服器排行榜: ${
+                rows.map((row, index) => `${index + 1}.${row.displayName}(${row.studentId}) ${row.correct}/${row.total},${row.accuracy}%`).join(' | ') || '無資料'
             }`,
         );
     }
 
     return outputs;
 };
+
+const buildCapabilityAnswer = (isTeacher: boolean) => readMultilineEnv(
+    isTeacher ? 'AGENT_CAPABILITY_PROMPT_TEACHER' : 'AGENT_CAPABILITY_PROMPT_STUDENT',
+    isTeacher ? DEFAULT_AGENT_CAPABILITY_TEACHER : DEFAULT_AGENT_CAPABILITY_STUDENT,
+);
 
 export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -135,8 +184,7 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
         content: input.question,
     });
 
-    const me = await getUserByDiscordId(input.userId);
-    const isTeacher = me?.role === 'teacher';
+    const isTeacher = input.isTeacher;
     const revisionTarget = await getRevisionTarget(input.sessionId);
 
     if (isTeacher && isBatchGenerationIntent(input.question)) {
@@ -152,6 +200,17 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
 
     if (!isTeacher && (isGenerationIntent(input.question) || isBatchGenerationIntent(input.question))) {
         const answer = '學生模式的 /ask 只提供課程問答與個人成績查詢，不提供出題或建立題目。若需要出題，請由老師帳號使用 /ask 或 /batch_generate。';
+        await appendChatMessage({
+            session_id: input.sessionId,
+            user_id: input.userId,
+            role: 'assistant',
+            content: answer,
+        });
+        return { answer };
+    }
+
+    if (isCapabilityQuestion(input.question)) {
+        const answer = buildCapabilityAnswer(isTeacher);
         await appendChatMessage({
             session_id: input.sessionId,
             user_id: input.userId,
@@ -193,13 +252,11 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
     }
 
     const memory = await getRecentChatMessages(input.sessionId, 8);
-    const toolOutputs = await runReadOnlyTools(input.userId, input.question);
+    const toolOutputs = await runReadOnlyTools(input.userId, input.channelId, input.question);
     const memoryText = memory.map((m) => `${m.role === 'user' ? '使用者' : '助教'}: ${m.content}`).join('\n');
 
     const prompt = [
-        '你是課堂測驗 Discord 助教。',
-        '規則: 不可捏造資料。查不到就明說。不要輸出任何金鑰或敏感資訊。',
-        '如果工具資訊有提供，優先使用工具資訊回答。',
+        readMultilineEnv('AGENT_SYSTEM_PROMPT', DEFAULT_AGENT_SYSTEM_PROMPT),
         '',
         `歷史對話:\n${memoryText || '（無）'}`,
         '',

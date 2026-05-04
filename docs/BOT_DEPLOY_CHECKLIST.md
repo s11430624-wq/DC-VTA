@@ -10,7 +10,7 @@
 2. 確認 `FRONTEND_BASE_URL` 指向正式前端
 3. 確認 Supabase 可連線
 4. 確認 Discord Bot Token 與 Guild ID 正確
-5. 確認 `TEACHER_ROLE_ID` / `STUDENT_ROLE_ID` 正確
+5. 確認 `TEACHER_ROLE_ID` 正確
 
 ## 必要環境變數
 
@@ -24,7 +24,6 @@ GEMINI_API_KEY=
 GEMINI_MODEL=gemma-3-27b-it
 QUESTION_MODEL=gemini-3.1-flash-lite-preview
 TEACHER_ROLE_ID=
-STUDENT_ROLE_ID=
 FRONTEND_BASE_URL=https://teacher-dashboard-two-mauve.vercel.app
 ```
 
@@ -74,6 +73,7 @@ npm run start
 - 如果要使用群組模式，先跑 `20260504_003_discord_channel_groups.sql`
 - Discord bot 現在會以 `groups.group_id = Discord channelId` 自動建立或更新群組列
 - 舊的 LINE 風格 `group_id` 只保留歷史用途，不再參與 Discord bot 流程
+- 老師權限只信 Discord `TEACHER_ROLE_ID`，不再使用資料庫 `users.role`
 
 ## 回滾點
 

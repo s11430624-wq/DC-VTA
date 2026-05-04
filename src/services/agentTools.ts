@@ -1,7 +1,7 @@
 import { generateQuestionDraft } from './aiQuestionService';
 import { getQuestionById, getRecentQuestions } from './questionService';
-import { getAllQuizResponses } from './quizService';
-import { getUserByDiscordId, getUsersByIds } from './userService';
+import { getAllQuizResponses, getQuizResponsesByUserIds, isRankEligibleResponse } from './quizService';
+import { getUserByDiscordId, getUsersByClassName, getUsersByIds } from './userService';
 
 type RankingStat = {
     userId: string;
@@ -32,7 +32,7 @@ const getLimitedRankCount = (value: number | null | undefined) => {
 const buildRankingStats = (responses: Awaited<ReturnType<typeof getAllQuizResponses>>): RankingStat[] => {
     const statsByUserId = new Map<string, RankingStat>();
 
-    for (const response of responses) {
+    for (const response of responses.filter(isRankEligibleResponse)) {
         const current = statsByUserId.get(response.user_id) ?? {
             userId: response.user_id,
             totalAnswered: 0,
@@ -121,6 +121,7 @@ export async function runAgentTool(
             return JSON.stringify({
                 display_name: user.display_name,
                 student_id: user.student_id,
+                class_name: user.class_name ?? null,
                 role: user.role,
             });
         }
@@ -145,7 +146,7 @@ export async function runAgentTool(
 
         case 'get_my_stats': {
             const responses = await getAllQuizResponses();
-            const myResponses = responses.filter((response) => response.user_id === context.userId);
+            const myResponses = responses.filter((response) => response.user_id === context.userId && isRankEligibleResponse(response));
             const correctCount = myResponses.filter((response) => response.is_correct).length;
             const totalAnswered = myResponses.length;
             const accuracy = totalAnswered === 0 ? 0 : Math.round((correctCount / totalAnswered) * 100);
@@ -161,19 +162,33 @@ export async function runAgentTool(
 
         case 'get_rank': {
             const limit = getLimitedRankCount(call.limit);
-            const responses = await getAllQuizResponses();
+            const currentUser = await getUserByDiscordId(context.userId);
+            const className = currentUser?.class_name?.trim();
+            if (!className) {
+                return JSON.stringify({
+                    class_name: null,
+                    rows: [],
+                    message: '目前使用者尚未設定班級。',
+                });
+            }
+
+            const classUsers = await getUsersByClassName(className);
+            const responses = await getQuizResponsesByUserIds(classUsers.map((user) => user.user_id));
             const topStats = buildRankingStats(responses).slice(0, limit);
             const users = await getUsersByIds(topStats.map((stat) => stat.userId));
             const usersById = new Map(users.map((user) => [user.user_id, user]));
 
-            return JSON.stringify(topStats.map((stat, index) => ({
-                rank: index + 1,
-                display_name: usersById.get(stat.userId)?.display_name ?? '未知使用者',
-                student_id: usersById.get(stat.userId)?.student_id ?? null,
-                correct_count: stat.correctCount,
-                total_answered: stat.totalAnswered,
-                accuracy_percent: Math.round(stat.accuracy * 100),
-            })));
+            return JSON.stringify({
+                class_name: className,
+                rows: topStats.map((stat, index) => ({
+                    rank: index + 1,
+                    display_name: usersById.get(stat.userId)?.display_name ?? '未知使用者',
+                    student_id: usersById.get(stat.userId)?.student_id ?? null,
+                    correct_count: stat.correctCount,
+                    total_answered: stat.totalAnswered,
+                    accuracy_percent: Math.round(stat.accuracy * 100),
+                })),
+            });
         }
 
         case 'get_recent_questions': {

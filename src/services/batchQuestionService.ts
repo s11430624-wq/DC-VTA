@@ -286,7 +286,11 @@ export async function generateQuestionBatchDraft(
     return record;
 }
 
-export async function approveQuestionBatchDraft(batchId: string, userId: string): Promise<QuestionRecord[]> {
+export async function approveQuestionBatchDraft(
+    batchId: string,
+    userId: string,
+    categoryOverride?: string,
+): Promise<QuestionRecord[]> {
     const batchDraft = await getBatchDraftById(batchId);
 
     if (!batchDraft || batchDraft.userId !== userId) {
@@ -297,7 +301,7 @@ export async function approveQuestionBatchDraft(batchId: string, userId: string)
     for (const question of batchDraft.questions) {
         const createdQuestion = await createMultipleChoiceQuestion({
             content: question.content,
-            category: question.category,
+            category: categoryOverride ?? question.category,
             options: question.options,
             correctAnswer: question.correct_answer,
             explanation: question.explanation,

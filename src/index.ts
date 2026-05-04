@@ -8,6 +8,7 @@
     Client,
     EmbedBuilder,
     GatewayIntentBits,
+    MessageFlags,
     ModalBuilder,
     REST,
     Routes,
@@ -26,11 +27,14 @@ import {
     discardQuestionBatchDraft,
     generateQuestionBatchDraft,
 } from './services/batchQuestionService';
+import { getTeacherLogChannelIdForGuild, upsertGuildSettingsFromRuntime } from './services/guildSettingsService';
 import { ensureDiscordChannelGroup, ensureGroupMember, setCurrentQuestionForGroup } from './services/groupService';
 import { addMultipleChoiceQuestion, createShortAnswerQuestion, getQuestionById, getRecentQuestions } from './services/questionService';
 import {
+    getExistingResponse,
     getAllQuizResponses,
     getPendingQuizResponses,
+    getQuizResponsesByGroupId,
     getResponsesByQuestionId,
     getUserQuizStats,
     isRankEligibleResponse,
@@ -48,12 +52,9 @@ dotenv.config();
 const requiredEnvVars = [
     'DISCORD_TOKEN',
     'DISCORD_CLIENT_ID',
-    'DISCORD_GUILD_ID',
     'SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
     'GEMINI_API_KEY',
-    'TEACHER_ROLE_ID',
-    'STUDENT_ROLE_ID',
 ] as const;
 
 const missingEnvVars = requiredEnvVars.filter((key) => !process.env[key]);
@@ -64,8 +65,9 @@ if (missingEnvVars.length > 0) {
 
 const token = process.env.DISCORD_TOKEN!;
 const clientId = process.env.DISCORD_CLIENT_ID!;
-const guildId = process.env.DISCORD_GUILD_ID!;
 const frontendBaseUrl = (process.env.FRONTEND_BASE_URL || 'http://localhost:5173').replace(/\/$/, '');
+const DEFAULT_OPEN_DURATION_MINUTES = 3;
+const MAX_REACTION_TIME_SECONDS = 3600;
 
 // 初始化機器人客戶端
 const client = new Client({
@@ -153,13 +155,21 @@ const commands = [
     },
     {
         name: 'open',
-        description: '老師開放一題選擇題',
+        description: '老師開放一題題目',
         options: [
             {
                 name: 'id',
                 description: '題目 ID',
                 type: ApplicationCommandOptionType.Integer,
                 required: true,
+            },
+            {
+                name: 'duration_minutes',
+                description: '開放作答時間（分鐘，預設 3 分鐘）',
+                type: ApplicationCommandOptionType.Integer,
+                required: false,
+                min_value: 1,
+                max_value: 60,
             },
         ],
     },
@@ -505,34 +515,37 @@ const getLimitedRankCount = (value: number | null) => {
     return Math.max(1, Math.min(20, value));
 };
 
-const getChannelGroupName = (
-    channel: unknown,
-    channelId: string | null,
+const getGuildGroupName = (
+    guild: unknown,
+    guildId: string | null,
 ) => {
-    const channelName = (
-        channel
-        && typeof channel === 'object'
-        && 'name' in channel
-        && typeof (channel as { name?: unknown }).name === 'string'
+    const guildName = (
+        guild
+        && typeof guild === 'object'
+        && 'name' in guild
+        && typeof (guild as { name?: unknown }).name === 'string'
     )
-        ? (channel as { name: string }).name.trim()
+        ? (guild as { name: string }).name.trim()
         : null;
-    return channelName && channelName.length > 0
-        ? channelName
-        : (channelId ? `discord-${channelId}` : null);
+    return guildName && guildName.length > 0
+        ? guildName
+        : (guildId ? `discord-guild-${guildId}` : null);
 };
 
-const resolveChannelGroupId = async (
-    channelId: string | null,
-    channel: unknown,
+const resolveGuildGroupId = async (
+    guildId: string | null,
+    guild: unknown,
 ) => {
-    if (!channelId) {
+    if (!guildId) {
         return null;
     }
 
-    const group = await ensureDiscordChannelGroup(channelId, getChannelGroupName(channel, channelId));
+    const group = await ensureDiscordChannelGroup(guildId, getGuildGroupName(guild, guildId));
     return group?.group_id ?? null;
 };
+
+const getGuildCategoryName = (guild: unknown, guildId: string | null) =>
+    getGuildGroupName(guild, guildId) ?? '一般';
 
 const getQuestionExplanation = (metadata: QuestionMetadata | string | null) => {
     const parsed = parseQuestionMetadata(metadata);
@@ -557,7 +570,97 @@ const buildGradingLink = (params: { questionId?: number; responseId?: number; st
     return `${frontendBaseUrl}/?${searchParams.toString()}`;
 };
 
-const buildQuestionOpenFields = (options: string[], category: string) => {
+const resolveTeacherLogChannel = async (guild: unknown) => {
+    if (!guild || typeof guild !== 'object' || !('channels' in guild)) {
+        return null;
+    }
+
+    const runtimeGuild = guild as { id?: string; name?: string; channels?: { cache?: Map<string, unknown> | { values: () => Iterable<unknown> } } };
+    const configuredTeacherLogChannelId = runtimeGuild.id
+        ? await getTeacherLogChannelIdForGuild(runtimeGuild.id)
+        : null;
+
+    if (configuredTeacherLogChannelId) {
+        try {
+            const fetched = await client.channels.fetch(configuredTeacherLogChannelId);
+            if (fetched && 'send' in fetched && typeof fetched.send === 'function') {
+                return fetched;
+            }
+        } catch (error) {
+            console.warn('⚠️ 無法取得 TEACHER_LOG_CHANNEL_ID 指定的頻道：', formatError(error));
+        }
+    }
+
+    const channels = runtimeGuild.channels?.cache;
+    if (!channels || typeof channels.values !== 'function') {
+        return null;
+    }
+
+    for (const channel of channels.values()) {
+        if (
+            channel
+            && typeof channel === 'object'
+            && 'name' in channel
+            && (channel as { name?: unknown }).name === 'teacher'
+            && 'send' in channel
+            && typeof (channel as { send?: unknown }).send === 'function'
+        ) {
+            // If we discovered the teacher channel by convention, persist it into guild_settings
+            // so operators can see it in dashboard and avoid repeated fallback lookups.
+            if (!configuredTeacherLogChannelId && runtimeGuild.id && 'id' in channel) {
+                const discoveredChannelId = typeof (channel as { id?: unknown }).id === 'string'
+                    ? (channel as { id: string }).id
+                    : null;
+
+                if (discoveredChannelId) {
+                    try {
+                        await upsertGuildSettingsFromRuntime({
+                            guildId: runtimeGuild.id,
+                            guildName: typeof runtimeGuild.name === 'string' ? runtimeGuild.name : null,
+                            teacherLogChannelId: discoveredChannelId,
+                        });
+                    } catch (error) {
+                        console.warn('⚠️ 自動回寫 teacher_log_channel_id 失敗：', formatError(error));
+                    }
+                }
+            }
+
+            return channel as { send: (payload: { embeds: EmbedBuilder[] }) => Promise<unknown> };
+        }
+    }
+
+    return null;
+};
+
+const notifyTeacherLinkSuccess = async (params: {
+    guild: unknown;
+    sourceChannelName: string | null;
+    discordUserId: string;
+    discordTag: string;
+    studentName: string;
+    studentId: string;
+}) => {
+    const channel = await resolveTeacherLogChannel(params.guild);
+    if (!channel) {
+        return;
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(0x16a34a)
+        .setTitle('新學生完成綁定')
+        .addFields(
+            { name: '姓名', value: params.studentName, inline: true },
+            { name: '學號', value: params.studentId, inline: true },
+            { name: 'Discord', value: `${params.discordTag}\n<@${params.discordUserId}>`, inline: false },
+            { name: 'Discord ID', value: params.discordUserId, inline: false },
+            { name: '來源頻道', value: params.sourceChannelName ?? '未知頻道', inline: true },
+        )
+        .setTimestamp(new Date());
+
+    await channel.send({ embeds: [embed] });
+};
+
+const buildQuestionOpenFields = (options: string[], category: string, closeAtMs: number) => {
     const fields: APIEmbedField[] = [
         {
             name: '分類',
@@ -567,6 +670,11 @@ const buildQuestionOpenFields = (options: string[], category: string) => {
         {
             name: '作答方式',
             value: '請直接按下 A / B / C / D 按鈕作答',
+            inline: true,
+        },
+        {
+            name: '作答期限',
+            value: `<t:${Math.floor(closeAtMs / 1000)}:R>`,
             inline: true,
         },
     ];
@@ -582,30 +690,13 @@ const buildQuestionOpenFields = (options: string[], category: string) => {
     return fields;
 };
 
-const buildShortAnswerOpenFields = (category: string, rubric: string | null) => {
-    const fields: APIEmbedField[] = [
-        {
-            name: '分類',
-            value: category,
-            inline: true,
-        },
-        {
-            name: '作答方式',
-            value: '按下「提交短答」後輸入文字答案',
-            inline: true,
-        },
-    ];
-
-    if (rubric) {
-        fields.push({
-            name: '評分重點',
-            value: rubric.length > 200 ? `${rubric.slice(0, 200)}...` : rubric,
-            inline: false,
-        });
-    }
-
-    return fields;
-};
+const buildShortAnswerOpenFields = (closeAtMs: number): APIEmbedField[] => [
+    {
+        name: '作答期限',
+        value: `<t:${Math.floor(closeAtMs / 1000)}:R>`,
+        inline: true,
+    },
+];
 
 const getDraftPreviewText = (draft: {
     category: string;
@@ -666,6 +757,62 @@ const hasValidDraftPreview = (draft: {
     && ['A', 'B', 'C', 'D'].includes(draft.correctAnswer)
 );
 
+const buildAnswerCustomId = (questionId: number, option: 'A' | 'B' | 'C' | 'D', openedAtMs: number, durationSeconds: number) =>
+    `answer:qid=${questionId}:opt=${option}:open=${openedAtMs}:dur=${durationSeconds}`;
+
+const buildShortAnswerButtonCustomId = (questionId: number, openedAtMs: number, durationSeconds: number) =>
+    `short:qid=${questionId}:open=${openedAtMs}:dur=${durationSeconds}`;
+
+const buildShortAnswerModalCustomId = (questionId: number, openedAtMs: number, durationSeconds: number) =>
+    `short_modal:qid=${questionId}:open=${openedAtMs}:dur=${durationSeconds}`;
+
+const parseShortAnswerCustomId = (customId: string) => {
+    const match = /^short:qid=(\d+)(?::open=(\d{13}))?(?::dur=(\d+))?$/.exec(customId);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        questionId: Number(match[1]),
+        openedAtMs: match[2] ? Number(match[2]) : null,
+        durationSeconds: match[3] ? Number(match[3]) : null,
+    };
+};
+
+const parseShortAnswerModalCustomId = (customId: string) => {
+    const match = /^short_modal:qid=(\d+)(?::open=(\d{13}))?(?::dur=(\d+))?$/.exec(customId);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        questionId: Number(match[1]),
+        openedAtMs: match[2] ? Number(match[2]) : null,
+        durationSeconds: match[3] ? Number(match[3]) : null,
+    };
+};
+
+const hasAnswerWindowExpired = (openedAtMs: number | null, durationSeconds: number | null) => {
+    if (!openedAtMs || !durationSeconds) {
+        return false;
+    }
+
+    return Date.now() > openedAtMs + (durationSeconds * 1000);
+};
+
+const calculateReactionTimeSeconds = (openedAtMs: number | null) => {
+    if (!openedAtMs) {
+        return null;
+    }
+
+    const diffSeconds = (Date.now() - openedAtMs) / 1000;
+    if (diffSeconds <= 0 || diffSeconds >= MAX_REACTION_TIME_SECONDS) {
+        return 0;
+    }
+
+    return Number(diffSeconds.toFixed(1));
+};
+
 const buildRankingStats = (responses: QuizResponse[]): RankingStat[] => {
     const statsByUserId = new Map<string, RankingStat>();
 
@@ -695,18 +842,29 @@ const buildRankingStats = (responses: QuizResponse[]): RankingStat[] => {
     });
 };
 
-const formatRankResult = async (limit: number) => {
-    const responses = await getAllQuizResponses();
+const formatRankResult = async (guildId: string | null, guild: unknown, limit: number) => {
+    const groupId = await resolveGuildGroupId(guildId, guild);
+    if (!groupId) {
+        return '目前無法判定這個 Discord 伺服器所屬班級，請在班級伺服器中使用 /rank。';
+    }
 
+    const responses = await getQuizResponsesByGroupId(groupId);
     if (responses.length === 0) {
-        return '目前還沒有排行榜資料。';
+        const groupName = getGuildGroupName(guild, guildId);
+        return `${groupName ?? '目前班級'}還沒有排行榜資料。`;
     }
 
     const rankingStats = buildRankingStats(responses).slice(0, limit);
+    if (rankingStats.length === 0) {
+        const groupName = getGuildGroupName(guild, guildId);
+        return `${groupName ?? '目前班級'}還沒有可列入排行榜的作答紀錄。`;
+    }
+
     const users = await getUsersByIds(rankingStats.map((stat) => stat.userId));
     const usersById = new Map(users.map((user) => [user.user_id, user]));
+    const groupName = getGuildGroupName(guild, guildId) ?? '目前班級';
     const lines = [
-        `🏆 排行榜 Top ${limit}`,
+        `🏆 ${groupName} 排行榜 Top ${limit}`,
         '',
         ...rankingStats.map((stat, index) => {
             const user = usersById.get(stat.userId);
@@ -816,47 +974,73 @@ const handleAnswerButton = async (interaction: ButtonInteraction) => {
         return;
     }
 
+    if (hasAnswerWindowExpired(parsedCustomId.openedAtMs, parsedCustomId.durationSeconds)) {
+        await safeReply(interaction, '⏰ 這題的作答時間已截止。', true);
+        return;
+    }
+
+    const existingResponse = await getExistingResponse(interaction.user.id, question.id);
+    if (existingResponse) {
+        await safeReply(interaction, '⛔ 這一題你已經作答過了，每人只能提交一次。', true);
+        return;
+    }
+
     const selectedOption = parsedCustomId.selectedOption;
     const isCorrect = selectedOption === correctAnswer;
-    const groupId = await resolveChannelGroupId(interaction.channelId, interaction.channel);
+    const groupId = await resolveGuildGroupId(interaction.guildId, interaction.guild);
     if (groupId) {
         await ensureGroupMember(groupId, interaction.user.id);
     }
-    const { updated } = await upsertQuizResponse({
+    await upsertQuizResponse({
         user_id: interaction.user.id,
         question_id: question.id,
         group_id: groupId,
         selected_option: selectedOption,
         is_correct: isCorrect,
+        reaction_time: calculateReactionTimeSeconds(parsedCustomId.openedAtMs),
     });
     const stats = await getUserQuizStats(interaction.user.id);
     const explanation = getQuestionExplanation(question.metadata);
-    const updatedMessage = updated ? '\n你先前的答案已更新。' : '';
     const explanationLine = explanation ? `\n解析：${explanation}` : '';
-    const statsLines = `\n目前累積：答對 ${stats.correctCount} / 作答 ${stats.totalAnswered} / 答對率 ${stats.accuracyPercent}%`;
+    const statsLines = `\n你的目前累積：答對 ${stats.correctCount} / 作答 ${stats.totalAnswered} / 個人答對率 ${stats.accuracyPercent}%`;
     const replyContent = isCorrect
-        ? `✅ 答對了！\n你的答案：${selectedOption}${updatedMessage}${explanationLine}${statsLines}`
-        : `❌ 答錯了。\n你的答案：${selectedOption}\n正確答案：${correctAnswer}${updatedMessage}${explanationLine}${statsLines}`;
+        ? `✅ 答對了！\n你的答案：${selectedOption}${explanationLine}${statsLines}`
+        : `❌ 答錯了。\n你的答案：${selectedOption}${explanationLine}${statsLines}`;
 
     await safeReply(interaction, replyContent, true);
 };
 
 const handleShortAnswerButton = async (interaction: ButtonInteraction) => {
-    const match = /^short:qid=(\d+)$/.exec(interaction.customId);
-    if (!match) {
+    const parsedCustomId = parseShortAnswerCustomId(interaction.customId);
+    if (!parsedCustomId) {
         await safeReply(interaction, '短答按鈕格式錯誤。', true);
         return;
     }
 
-    const questionId = Number(match[1]);
+    if (hasAnswerWindowExpired(parsedCustomId.openedAtMs, parsedCustomId.durationSeconds)) {
+        await safeReply(interaction, '⏰ 這題的作答時間已截止。', true);
+        return;
+    }
+
+    const existingResponse = await getExistingResponse(interaction.user.id, parsedCustomId.questionId);
+    if (existingResponse) {
+        await safeReply(interaction, '⛔ 這一題你已經作答過了，每人只能提交一次。', true);
+        return;
+    }
+
+    const questionId = parsedCustomId.questionId;
     const question = await getQuestionById(questionId);
     if (!question || question.question_type !== 'short_answer') {
         await safeReply(interaction, '找不到這個短答題。', true);
         return;
     }
 
+    const modalCustomId = parsedCustomId.openedAtMs && parsedCustomId.durationSeconds
+        ? buildShortAnswerModalCustomId(questionId, parsedCustomId.openedAtMs, parsedCustomId.durationSeconds)
+        : `short_modal:qid=${questionId}`;
+
     const modal = new ModalBuilder()
-        .setCustomId(`short_modal:qid=${questionId}`)
+        .setCustomId(modalCustomId)
         .setTitle(`第 ${questionId} 題短答提交`);
 
     const input = new TextInputBuilder()
@@ -881,7 +1065,11 @@ const handleDraftButton = async (interaction: ButtonInteraction) => {
 
     if (action === 'approve_draft') {
         try {
-            const question = await approveQuestionDraft(draftId, interaction.user.id);
+            const question = await approveQuestionDraft(
+                draftId,
+                interaction.user.id,
+                getGuildCategoryName(interaction.guild, interaction.guildId),
+            );
             await clearRevisionTarget(buildAgentSessionId(interaction.user.id, interaction.channelId));
             await safeReply(
                 interaction,
@@ -933,7 +1121,11 @@ const handleBatchDraftButton = async (interaction: ButtonInteraction) => {
 
     if (action === 'approve_batch') {
         try {
-            const questions = await approveQuestionBatchDraft(batchId, interaction.user.id);
+            const questions = await approveQuestionBatchDraft(
+                batchId,
+                interaction.user.id,
+                getGuildCategoryName(interaction.guild, interaction.guildId),
+            );
             const lines = [
                 '✅ 批次題目已建立。',
                 ...questions.map((question, index) => `第 ${index + 1} 題：ID ${question.id}｜${question.content ?? '（無題目內容）'}`),
@@ -962,17 +1154,46 @@ const handleBatchDraftButton = async (interaction: ButtonInteraction) => {
 client.once('clientReady', async () => {
     console.log(`✅ 機器人已上線！登入身分：${client.user?.tag}`);
 
-    // 向 Discord 註冊 Slash Commands
     const rest = new REST({ version: '10' }).setToken(token);
+
+    for (const [, guild] of client.guilds.cache) {
+        try {
+            console.log(`⏳ 正在註冊 Slash Commands 到 guild ${guild.id} (${guild.name})...`);
+            await rest.put(
+                Routes.applicationGuildCommands(clientId, guild.id),
+                { body: commands },
+            );
+
+            await upsertGuildSettingsFromRuntime({
+                guildId: guild.id,
+                guildName: guild.name,
+            });
+
+            console.log(`✅ Guild ${guild.name} Slash Commands 註冊成功！`);
+        } catch (error) {
+            console.error(`❌ Guild ${guild.id} 註冊指令失敗：`, formatError(error));
+        }
+    }
+});
+
+client.on('guildCreate', async (guild) => {
+    const rest = new REST({ version: '10' }).setToken(token);
+
     try {
-        console.log('⏳ 正在註冊 Slash Commands...');
+        console.log(`⏳ 偵測到新 guild，正在註冊 Slash Commands 到 ${guild.id} (${guild.name})...`);
         await rest.put(
-            Routes.applicationGuildCommands(clientId, guildId),
-            { body: commands }
+            Routes.applicationGuildCommands(clientId, guild.id),
+            { body: commands },
         );
-        console.log('✅ Slash Commands 註冊成功！');
+
+        await upsertGuildSettingsFromRuntime({
+            guildId: guild.id,
+            guildName: guild.name,
+        });
+
+        console.log(`✅ 新 guild ${guild.name} 註冊完成！`);
     } catch (error) {
-        console.error('❌ 註冊指令失敗：', formatError(error));
+        console.error(`❌ 新 guild ${guild.id} 註冊失敗：`, formatError(error));
     }
 });
 
@@ -1026,13 +1247,18 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('short_modal:qid=')) {
         try {
-            const match = /^short_modal:qid=(\d+)$/.exec(interaction.customId);
-            if (!match) {
+            const parsedCustomId = parseShortAnswerModalCustomId(interaction.customId);
+            if (!parsedCustomId) {
                 await safeReply(interaction, '短答提交格式錯誤。', true);
                 return;
             }
 
-            const questionId = Number(match[1]);
+            if (hasAnswerWindowExpired(parsedCustomId.openedAtMs, parsedCustomId.durationSeconds)) {
+                await safeReply(interaction, '⏰ 這題的作答時間已截止。', true);
+                return;
+            }
+
+            const questionId = parsedCustomId.questionId;
             const user = await getUserByDiscordId(interaction.user.id);
             if (!user) {
                 await safeReply(interaction, '請先使用 /link 綁定學號後再作答。', true);
@@ -1045,7 +1271,13 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            const groupId = await resolveChannelGroupId(interaction.channelId, interaction.channel);
+            const existingResponse = await getExistingResponse(interaction.user.id, questionId);
+            if (existingResponse) {
+                await safeReply(interaction, '⛔ 這一題你已經作答過了，每人只能提交一次。', true);
+                return;
+            }
+
+            const groupId = await resolveGuildGroupId(interaction.guildId, interaction.guild);
             if (groupId) {
                 await ensureGroupMember(groupId, interaction.user.id);
             }
@@ -1056,11 +1288,12 @@ client.on('interactionCreate', async (interaction) => {
                 group_id: groupId,
                 selected_option: null,
                 is_correct: false,
+                reaction_time: calculateReactionTimeSeconds(parsedCustomId.openedAtMs),
                 answer_text: answerText,
                 status: 'pending',
             });
 
-            await safeReply(interaction, '✅ 短答已提交。老師之後可以查看你的內容。若再次提交，系統會更新為最新版本。', true);
+            await safeReply(interaction, '✅ 短答已提交。老師之後可以查看你的內容。', true);
         } catch (error) {
             console.error('❌ 短答提交失敗：', formatError(error));
             await safeReply(interaction, '❌ 短答提交失敗，請稍後再試。', true);
@@ -1080,7 +1313,7 @@ client.on('interactionCreate', async (interaction) => {
                 '`/help` - 顯示此訊息',
                 '`/link student_id name` - 綁定學號',
                 '`/me` - 查詢自己的綁定資料',
-                '`/rank limit` - 顯示排行榜',
+                '`/rank limit` - 顯示目前班級伺服器的排行榜',
                 '`/ask prompt` - 向助教提問或查詢自己的成績',
                 '`/clear_memory` - 清除目前頻道中的 Agent 記憶與未確認題目草稿',
             ];
@@ -1089,7 +1322,7 @@ client.on('interactionCreate', async (interaction) => {
                 '`/question id` - 查看題目詳情',
                 '`/add content` - 老師新增選擇題',
                 '`/add_short content rubric` - 老師新增短答題',
-                '`/open id` - 老師開放題目',
+                '`/open id [duration_minutes]` - 老師開放題目',
                 '`/check id` - 老師查看答題統計',
                 '`/grading_queue` - 老師查看待批改簡答清單',
                 '`/grade_link id` - 老師取得指定短答題批改連結',
@@ -1113,12 +1346,33 @@ client.on('interactionCreate', async (interaction) => {
         if (chatInteraction.commandName === 'link') {
             const studentId = chatInteraction.options.getString('student_id', true);
             const name = chatInteraction.options.getString('name', true);
+            const user = await linkStudent(chatInteraction.user.id, name, studentId);
 
-            await linkStudent(chatInteraction.user.id, name, studentId);
+            try {
+                const sourceChannelName = (
+                    chatInteraction.channel
+                    && typeof chatInteraction.channel === 'object'
+                    && 'name' in chatInteraction.channel
+                    && typeof (chatInteraction.channel as { name?: unknown }).name === 'string'
+                )
+                    ? (chatInteraction.channel as { name: string }).name
+                    : null;
+
+                await notifyTeacherLinkSuccess({
+                    guild: chatInteraction.guild,
+                    sourceChannelName,
+                    discordUserId: chatInteraction.user.id,
+                    discordTag: chatInteraction.user.tag,
+                    studentName: user.display_name ?? name,
+                    studentId: user.student_id ?? studentId,
+                });
+            } catch (error) {
+                console.warn('⚠️ 發送老師綁定通知失敗：', formatError(error));
+            }
 
             await safeReply(
                 chatInteraction,
-                `✅ 綁定成功！\n姓名：${name}\n學號：${studentId}`,
+                `✅ 綁定成功！\n姓名：${user.display_name ?? name}\n學號：${user.student_id ?? studentId}`,
                 true,
             );
             return;
@@ -1139,7 +1393,7 @@ client.on('interactionCreate', async (interaction) => {
 
             await safeReply(
                 chatInteraction,
-                `👤 我的資料\n姓名：${user.display_name ?? '未設定'}\n學號：${user.student_id ?? '未設定'}\n身分：${user.role ?? '未設定'}`,
+                `👤 我的資料\n姓名：${user.display_name ?? '未設定'}\n學號：${user.student_id ?? '未設定'}`,
                 true,
             );
             return;
@@ -1193,7 +1447,10 @@ client.on('interactionCreate', async (interaction) => {
             if (!(await requireTeacher(chatInteraction))) return;
 
             const content = chatInteraction.options.getString('content', true);
-            const question = await addMultipleChoiceQuestion(content);
+            const question = await addMultipleChoiceQuestion(
+                content,
+                getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
+            );
 
             await safeReply(
                 chatInteraction,
@@ -1211,7 +1468,7 @@ client.on('interactionCreate', async (interaction) => {
             const question = await createShortAnswerQuestion({
                 content,
                 rubric,
-                category: '一般',
+                category: getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
             });
 
             await safeReply(
@@ -1226,7 +1483,13 @@ client.on('interactionCreate', async (interaction) => {
         if (chatInteraction.commandName === 'open') {
             if (!(await requireTeacher(chatInteraction))) return;
 
+            await chatInteraction.deferReply({ flags: MessageFlags.Ephemeral });
+
             const id = chatInteraction.options.getInteger('id', true);
+            const durationMinutes = chatInteraction.options.getInteger('duration_minutes') ?? DEFAULT_OPEN_DURATION_MINUTES;
+            const durationSeconds = durationMinutes * 60;
+            const openedAtMs = Date.now();
+            const closeAtMs = openedAtMs + (durationSeconds * 1000);
             const question = await getQuestionById(id);
 
             if (!question) {
@@ -1239,7 +1502,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            const groupId = await resolveChannelGroupId(chatInteraction.channelId, chatInteraction.channel);
+            const groupId = await resolveGuildGroupId(chatInteraction.guildId, chatInteraction.guild);
             if (groupId) {
                 await setCurrentQuestionForGroup(groupId, question.id);
             }
@@ -1259,25 +1522,26 @@ client.on('interactionCreate', async (interaction) => {
                     .addFields(buildQuestionOpenFields(
                         options,
                         getQuestionTopic(question.metadata, question.category),
+                        closeAtMs,
                     ))
-                    .setFooter({ text: '請在題目開放期間內作答。若重新選擇，系統會更新你的答案。' })
+                    .setFooter({ text: '每人只能作答一次，逾時後系統將拒絕作答。' })
                     .setTimestamp(new Date());
 
                 const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
-                        .setCustomId(`answer:qid=${question.id}:opt=A`)
+                        .setCustomId(buildAnswerCustomId(question.id, 'A', openedAtMs, durationSeconds))
                         .setLabel('A')
                         .setStyle(ButtonStyle.Primary),
                     new ButtonBuilder()
-                        .setCustomId(`answer:qid=${question.id}:opt=B`)
+                        .setCustomId(buildAnswerCustomId(question.id, 'B', openedAtMs, durationSeconds))
                         .setLabel('B')
                         .setStyle(ButtonStyle.Primary),
                     new ButtonBuilder()
-                        .setCustomId(`answer:qid=${question.id}:opt=C`)
+                        .setCustomId(buildAnswerCustomId(question.id, 'C', openedAtMs, durationSeconds))
                         .setLabel('C')
                         .setStyle(ButtonStyle.Primary),
                     new ButtonBuilder()
-                        .setCustomId(`answer:qid=${question.id}:opt=D`)
+                        .setCustomId(buildAnswerCustomId(question.id, 'D', openedAtMs, durationSeconds))
                         .setLabel('D')
                         .setStyle(ButtonStyle.Primary),
                 );
@@ -1287,25 +1551,17 @@ client.on('interactionCreate', async (interaction) => {
                     components: [row],
                 });
             } else if (question.question_type === 'short_answer') {
-                const parsedMetadata = parseQuestionMetadata(question.metadata);
-                const rubric = parsedMetadata.ok
-                    ? getStringMetadata(parsedMetadata.metadata, 'rubric') ?? question.rubric ?? null
-                    : question.rubric ?? null;
-
                 const embed = new EmbedBuilder()
                     .setColor(0x16a34a)
                     .setTitle(`第 ${question.id} 題`)
                     .setDescription(question.content ?? '（無題目內容）')
-                    .addFields(buildShortAnswerOpenFields(
-                        getQuestionTopic(question.metadata, question.category),
-                        rubric,
-                    ))
-                    .setFooter({ text: '可重複提交，系統會保留你最後一次的短答內容。' })
+                    .addFields(buildShortAnswerOpenFields(closeAtMs))
+                    .setFooter({ text: '每人只能作答一次，逾時後系統將拒絕作答。' })
                     .setTimestamp(new Date());
 
                 const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
-                        .setCustomId(`short:qid=${question.id}`)
+                        .setCustomId(buildShortAnswerButtonCustomId(question.id, openedAtMs, durationSeconds))
                         .setLabel('提交短答')
                         .setStyle(ButtonStyle.Success),
                 );
@@ -1319,7 +1575,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            await safeReply(chatInteraction, `✅ 已開放第 ${question.id} 題`, true);
+            await safeReply(chatInteraction, `✅ 已開放第 ${question.id} 題，作答時間 ${durationMinutes} 分鐘。`, true);
             return;
         }
 
@@ -1367,7 +1623,7 @@ client.on('interactionCreate', async (interaction) => {
         // 處理 /rank 指令
         if (chatInteraction.commandName === 'rank') {
             const limit = getLimitedRankCount(chatInteraction.options.getInteger('limit'));
-            await safeReply(chatInteraction, await formatRankResult(limit), false);
+            await safeReply(chatInteraction, await formatRankResult(chatInteraction.guildId, chatInteraction.guild, limit), false);
             return;
         }
 
@@ -1421,6 +1677,8 @@ client.on('interactionCreate', async (interaction) => {
                 userId: chatInteraction.user.id,
                 question: prompt,
                 sessionId: buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId),
+                isTeacher: await isTeacher(chatInteraction),
+                channelId: chatInteraction.guildId ?? chatInteraction.channelId,
             });
 
             if (result.draftPreview) {

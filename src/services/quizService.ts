@@ -6,6 +6,7 @@ export type QuizResponse = {
     group_id?: string | null;
     selected_option: string | null;
     is_correct: boolean;
+    reaction_time?: number | null;
     answer_text?: string | null;
     status?: string | null;
 };
@@ -49,6 +50,7 @@ export async function upsertQuizResponse(data: QuizResponse): Promise<{ response
                 group_id: data.group_id ?? null,
                 selected_option: data.selected_option,
                 is_correct: data.is_correct,
+                reaction_time: data.reaction_time ?? null,
                 answer_text: data.answer_text ?? null,
                 status: data.status ?? 'graded',
             })
@@ -70,6 +72,7 @@ export async function upsertQuizResponse(data: QuizResponse): Promise<{ response
         .insert({
             ...data,
             group_id: data.group_id ?? null,
+            reaction_time: data.reaction_time ?? null,
             answer_text: data.answer_text ?? null,
             status: data.status ?? 'graded',
         })
@@ -136,4 +139,34 @@ export async function getUserQuizStats(userId: string): Promise<UserQuizStats> {
         wrongCount: totalAnswered - correctCount,
         accuracyPercent: totalAnswered === 0 ? 0 : Math.round((correctCount / totalAnswered) * 100),
     };
+}
+
+export async function getQuizResponsesByUserIds(userIds: string[]): Promise<QuizResponse[]> {
+    if (userIds.length === 0) {
+        return [];
+    }
+
+    const { data, error } = await supabase
+        .from('quiz_responses')
+        .select('*')
+        .in('user_id', userIds);
+
+    if (error) {
+        throw new Error(`依使用者查詢作答紀錄失敗：${error.message}`);
+    }
+
+    return (data ?? []) as QuizResponse[];
+}
+
+export async function getQuizResponsesByGroupId(groupId: string): Promise<QuizResponse[]> {
+    const { data, error } = await supabase
+        .from('quiz_responses')
+        .select('*')
+        .eq('group_id', groupId);
+
+    if (error) {
+        throw new Error(`依群組查詢作答紀錄失敗：${error.message}`);
+    }
+
+    return (data ?? []) as QuizResponse[];
 }
