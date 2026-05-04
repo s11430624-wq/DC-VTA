@@ -38,13 +38,13 @@ npm install
 2. 編譯檢查
 
 ```powershell
-npm run typecheck
+npm run bot:typecheck
 ```
 
 3. 啟動 bot
 
 ```powershell
-npm run start
+npm run bot:start
 ```
 
 4. 確認終端出現：

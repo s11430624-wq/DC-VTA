@@ -1,4 +1,8 @@
 .env
 .env.local
+apps/*/.env
+apps/*/.env.local
 node_modules/
 dist/
+apps/*/node_modules/
+apps/*/dist/

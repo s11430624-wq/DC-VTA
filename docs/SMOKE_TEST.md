@@ -15,8 +15,8 @@ Run this checklist after any bot logic change, deployment, or environment update
 ## Start
 
 ```powershell
-npm run typecheck
-npm run start
+npm run bot:typecheck
+npm run bot:start
 ```
 
 Expected startup logs:

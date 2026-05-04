@@ -124,7 +124,7 @@ Rules:
 ## Local Run
 
 ```powershell
-npx ts-node src/index.ts
+npm run bot:start
 ```
 
 Slash commands are auto-registered on bot startup for the configured guild.

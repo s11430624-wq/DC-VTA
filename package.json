@@ -1,28 +1,17 @@
 {
-  "name": "n8n",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "n8n-classroom-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/bot",
+    "apps/dashboard"
+  ],
   "scripts": {
-    "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
-    "start": "ts-node src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck",
-    "test": "npm run typecheck"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.105.1",
-    "discord.js": "^14.26.4",
-    "dotenv": "^17.4.2"
-  },
-  "devDependencies": {
-    "@types/node": "^25.6.0",
-    "nodemon": "^3.1.14",
-    "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "bot:dev": "npm --prefix apps/bot run dev",
+    "bot:start": "npm --prefix apps/bot run start",
+    "bot:typecheck": "npm --prefix apps/bot run typecheck",
+    "dashboard:dev": "npm --prefix apps/dashboard run dev",
+    "dashboard:build": "npm --prefix apps/dashboard run build",
+    "classroom:start": "node scripts/start_local_classroom.cjs",
+    "verify": "npm run bot:typecheck"
   }
 }
