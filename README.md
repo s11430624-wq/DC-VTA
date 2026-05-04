@@ -22,6 +22,16 @@ npm run classroom:start
 ```powershell
 npm run bot:typecheck
 npm run dashboard:build
+npm run dashboard:sync-out
+```
+
+`dashboard:sync-out` 會把 `apps/dashboard` 同步到 `C:\Users\s9207\teacher-dashboard`（可用 `EXTERNAL_DASHBOARD_DIR` 覆寫目標路徑）。
+
+若要反向拉回（不建議日常使用）：
+
+```powershell
+$env:ALLOW_DASHBOARD_SYNC_IN="true"
+npm run dashboard:sync-in
 ```
 
 ## 結構

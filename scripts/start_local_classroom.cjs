@@ -1,12 +1,13 @@
 const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
+const net = require('net');
 
 const workspaceRoot = path.resolve(__dirname, '..');
 const botDir = path.resolve(workspaceRoot, 'apps', 'bot');
 const dashboardDirDefault = path.resolve(workspaceRoot, 'apps', 'dashboard');
 const isWindows = process.platform === 'win32';
-const npmCommand = isWindows ? 'npm.cmd' : 'npm';
+const npmCommand = isWindows ? 'npm' : 'npm';
 const nodeCommand = process.execPath;
 
 const dashboardHost = process.env.LOCAL_DASHBOARD_HOST || '127.0.0.1';
@@ -91,6 +92,32 @@ function spawnProcess(label, command, args, options) {
     return child;
 }
 
+function spawnNpmProcess(label, args, options) {
+    if (isWindows) {
+        const commandLine = ['npm', ...args].join(' ');
+        return spawnProcess(label, 'cmd.exe', ['/d', '/s', '/c', commandLine], options);
+    }
+
+    return spawnProcess(label, npmCommand, args, options);
+}
+
+function isPortInUse(host, port) {
+    return new Promise((resolve) => {
+        const socket = new net.Socket();
+        socket.setTimeout(1000);
+
+        const done = (inUse) => {
+            socket.destroy();
+            resolve(inUse);
+        };
+
+        socket.once('connect', () => done(true));
+        socket.once('timeout', () => done(false));
+        socket.once('error', () => done(false));
+        socket.connect(port, host);
+    });
+}
+
 function killProcessTree(pid) {
     if (!pid) {
         return;
@@ -112,7 +139,7 @@ function killProcessTree(pid) {
     }
 }
 
-function main() {
+async function main() {
     const dashboardDir = resolveDashboardDir();
     const dashboardUrl = `http://${dashboardHost}:${dashboardPort}`;
     const aiGradingUrl = `http://${aiGradingHost}:${aiGradingPort}/api/ai-grade`;
@@ -128,37 +155,45 @@ function main() {
 
     const children = [];
 
-    const aiServer = spawnProcess(
-        'Local AI grading server',
-        nodeCommand,
-        [path.resolve(workspaceRoot, 'scripts', 'local_ai_grading_server.cjs')],
-        {
-            cwd: workspaceRoot,
-            env: buildRuntimeEnv({
-                LOCAL_AI_GRADING_HOST: aiGradingHost,
-                LOCAL_AI_GRADING_PORT: String(aiGradingPort),
-            }),
-        },
-    );
-    children.push(aiServer);
-
-    const dashboard = spawnProcess(
-        'Teacher dashboard',
-        npmCommand,
-        ['run', 'dev', '--', '--host', dashboardHost, '--port', String(dashboardPort), '--strictPort'],
-        {
-            cwd: dashboardDir,
-            env: {
-                ...botEnv,
-                VITE_AI_GRADING_API_URL: aiGradingUrl,
+    const aiPortInUse = await isPortInUse(aiGradingHost, aiGradingPort);
+    if (aiPortInUse) {
+        console.log(`ℹ️ 偵測到 ${aiGradingHost}:${aiGradingPort} 已在使用中，沿用既有 AI grading 服務。`);
+    } else {
+        const aiServer = spawnProcess(
+            'Local AI grading server',
+            nodeCommand,
+            [path.resolve(workspaceRoot, 'scripts', 'local_ai_grading_server.cjs')],
+            {
+                cwd: workspaceRoot,
+                env: buildRuntimeEnv({
+                    LOCAL_AI_GRADING_HOST: aiGradingHost,
+                    LOCAL_AI_GRADING_PORT: String(aiGradingPort),
+                }),
             },
-        },
-    );
-    children.push(dashboard);
+        );
+        children.push(aiServer);
+    }
 
-    const bot = spawnProcess(
+    const dashboardPortInUse = await isPortInUse(dashboardHost, dashboardPort);
+    if (dashboardPortInUse) {
+        console.log(`ℹ️ 偵測到 ${dashboardHost}:${dashboardPort} 已在使用中，沿用既有 dashboard。`);
+    } else {
+        const dashboard = spawnNpmProcess(
+            'Teacher dashboard',
+            ['run', 'dev', '--', '--host', dashboardHost, '--port', String(dashboardPort), '--strictPort'],
+            {
+                cwd: dashboardDir,
+                env: {
+                    ...botEnv,
+                    VITE_AI_GRADING_API_URL: aiGradingUrl,
+                },
+            },
+        );
+        children.push(dashboard);
+    }
+
+    const bot = spawnNpmProcess(
         'Discord bot',
-        npmCommand,
         ['run', 'start'],
         {
             cwd: botDir,
@@ -180,7 +215,10 @@ function main() {
 }
 
 if (require.main === module) {
-    main();
+    main().catch((error) => {
+        console.error(`❌ 啟動 classroom 模式失敗：${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+    });
 }
 
 module.exports = {
