@@ -4,6 +4,8 @@ const path = require('path');
 const workspaceRoot = path.resolve(__dirname, '..');
 const internalDashboardDir = path.resolve(workspaceRoot, 'apps', 'dashboard');
 const externalDashboardDir = process.env.EXTERNAL_DASHBOARD_DIR || 'C:\\Users\\s9207\\teacher-dashboard';
+const modeArg = process.argv.find((arg) => arg.startsWith('--mode=')) || '';
+const classroomMode = (modeArg.split('=')[1] || process.env.CLASSROOM_MODE || 'dev').toLowerCase();
 
 const EXCLUDED_NAMES = new Set([
     'node_modules',
@@ -65,6 +67,10 @@ function main() {
     const direction = process.argv[2];
     if (direction !== 'out' && direction !== 'in') {
         throw new Error('用法: node scripts/sync_dashboard.cjs <out|in>');
+    }
+
+    if (classroomMode === 'teacher') {
+        throw new Error('teacher 模式已鎖定，不允許執行 dashboard 同步。');
     }
 
     ensureDirectoryExists(internalDashboardDir, '內部 dashboard');

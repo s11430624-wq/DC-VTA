@@ -1,6 +1,6 @@
 # VTA Discord Bot
 
-本目錄是 monorepo 內的 bot app。repo 根目錄在 `C:\上課檔案\N8N`。
+本目錄是 monorepo 內的 bot app。
 
 VTA Discord Bot 是一個用於課堂測驗的 Discord 機器人。老師可以在 Discord 內出題、開題、查看統計，學生可以綁定學號、作答、查詢個人成績與排行榜。短答題的批改則導向 teacher dashboard。
 
@@ -124,7 +124,7 @@ AGENT_CAPABILITY_PROMPT_TEACHER=身為課堂測驗 Discord 助教，我目前可
 TEACHER_ROLE_ID=
 TEACHER_LOG_CHANNEL_ID=
 FRONTEND_BASE_URL=https://teacher-dashboard-two-mauve.vercel.app
-LOCAL_DASHBOARD_DIR=C:\上課檔案\N8N\apps\dashboard
+LOCAL_DASHBOARD_DIR=./apps/dashboard
 LOCAL_DASHBOARD_HOST=127.0.0.1
 LOCAL_DASHBOARD_PORT=5173
 LOCAL_AI_GRADING_HOST=127.0.0.1

@@ -9,6 +9,8 @@ const dashboardDirDefault = path.resolve(workspaceRoot, 'apps', 'dashboard');
 const isWindows = process.platform === 'win32';
 const npmCommand = isWindows ? 'npm' : 'npm';
 const nodeCommand = process.execPath;
+const modeArg = process.argv.find((arg) => arg.startsWith('--mode=')) || '';
+const classroomMode = (modeArg.split('=')[1] || process.env.CLASSROOM_MODE || 'teacher').toLowerCase();
 
 const dashboardHost = process.env.LOCAL_DASHBOARD_HOST || '127.0.0.1';
 const dashboardPort = Number(process.env.LOCAL_DASHBOARD_PORT || 5173);
@@ -57,11 +59,13 @@ function buildRuntimeEnv(overrides = {}) {
 }
 
 function resolveDashboardDir() {
-    const candidates = [
-        process.env.LOCAL_DASHBOARD_DIR,
-        dashboardDirDefault,
-        'C:\\Users\\s9207\\teacher-dashboard',
-    ].filter(Boolean);
+    const candidates = classroomMode === 'dev'
+        ? [
+            process.env.LOCAL_DASHBOARD_DIR,
+            dashboardDirDefault,
+            'C:\\Users\\s9207\\teacher-dashboard',
+        ].filter(Boolean)
+        : [dashboardDirDefault];
 
     for (const candidate of candidates) {
         if (candidate && fs.existsSync(candidate)) {
@@ -70,7 +74,7 @@ function resolveDashboardDir() {
     }
 
     throw new Error(
-        `找不到 teacher-dashboard 專案。請設定 LOCAL_DASHBOARD_DIR。目前嘗試路徑：${candidates.join(', ')}`,
+        `找不到 dashboard 專案（mode=${classroomMode}）。目前嘗試路徑：${candidates.join(', ')}`,
     );
 }
 
@@ -93,12 +97,11 @@ function spawnProcess(label, command, args, options) {
 }
 
 function spawnNpmProcess(label, args, options) {
-    if (isWindows) {
-        const commandLine = ['npm', ...args].join(' ');
-        return spawnProcess(label, 'cmd.exe', ['/d', '/s', '/c', commandLine], options);
-    }
-
-    return spawnProcess(label, npmCommand, args, options);
+    const command = isWindows ? 'npm' : npmCommand;
+    return spawnProcess(label, command, args, {
+        shell: isWindows,
+        ...options,
+    });
 }
 
 function isPortInUse(host, port) {
@@ -140,6 +143,10 @@ function killProcessTree(pid) {
 }
 
 async function main() {
+    if (classroomMode !== 'teacher' && classroomMode !== 'dev') {
+        throw new Error(`不支援的 CLASSROOM_MODE: ${classroomMode}。僅支援 teacher 或 dev。`);
+    }
+
     const dashboardDir = resolveDashboardDir();
     const dashboardUrl = `http://${dashboardHost}:${dashboardPort}`;
     const aiGradingUrl = `http://${aiGradingHost}:${aiGradingPort}/api/ai-grade`;
@@ -150,10 +157,12 @@ async function main() {
 
     console.log(`📍 Dashboard dir: ${dashboardDir}`);
     console.log(`📍 Bot dir: ${botDir}`);
+    console.log(`📍 Classroom mode: ${classroomMode}`);
     console.log(`📍 Dashboard URL: ${dashboardUrl}`);
     console.log(`📍 Local AI grading URL: ${aiGradingUrl}`);
 
     const children = [];
+    let isShuttingDown = false;
 
     const aiPortInUse = await isPortInUse(aiGradingHost, aiGradingPort);
     if (aiPortInUse) {
@@ -203,6 +212,10 @@ async function main() {
     children.push(bot);
 
     const shutdown = () => {
+        if (isShuttingDown) {
+            return;
+        }
+        isShuttingDown = true;
         console.log('⏹️ 正在關閉 classroom 本機模式...');
         for (const child of children) {
             killProcessTree(child.pid);

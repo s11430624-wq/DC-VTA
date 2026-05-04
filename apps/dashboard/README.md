@@ -1,6 +1,6 @@
 # Teacher Dashboard
 
-本目錄是 monorepo 內的 dashboard app。repo 根目錄在 `C:\上課檔案\N8N`。
+本目錄是 monorepo 內的 dashboard app。
 
 Teacher Dashboard 是短答題批改與教學分析前端，使用 Vue 3 + Vite + Supabase。
 

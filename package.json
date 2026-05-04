@@ -11,9 +11,11 @@
     "bot:typecheck": "npm --prefix apps/bot run typecheck",
     "dashboard:dev": "npm --prefix apps/dashboard run dev",
     "dashboard:build": "npm --prefix apps/dashboard run build",
-    "dashboard:sync-out": "node scripts/sync_dashboard.cjs out",
-    "dashboard:sync-in": "node scripts/sync_dashboard.cjs in",
-    "classroom:start": "node scripts/start_local_classroom.cjs",
+    "dashboard:sync-out": "node scripts/sync_dashboard.cjs out --mode=dev",
+    "dashboard:sync-in": "node scripts/sync_dashboard.cjs in --mode=dev",
+    "classroom:start": "node scripts/start_local_classroom.cjs --mode=teacher",
+    "classroom:start:teacher": "node scripts/start_local_classroom.cjs --mode=teacher",
+    "classroom:start:dev": "node scripts/start_local_classroom.cjs --mode=dev",
     "verify": "npm run bot:typecheck"
   }
 }
