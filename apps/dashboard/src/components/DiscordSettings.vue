@@ -15,6 +15,7 @@ const emptyRow = () => ({
   guild_name: '',
   teacher_role_id: '',
   teacher_log_channel_id: '',
+  command_audit_channel_id: '',
   _originGuildId: '',
   _localOnly: true,
   _pendingDelete: false,
@@ -26,7 +27,7 @@ async function fetchGuildSettings() {
   loading.value = true
   const { data, error } = await supabase
     .from('guild_settings')
-    .select('guild_id, guild_name, teacher_role_id, teacher_log_channel_id, updated_at')
+    .select('guild_id, guild_name, teacher_role_id, teacher_log_channel_id, command_audit_channel_id, updated_at')
     .order('updated_at', { ascending: false })
 
   if (error) {
@@ -38,6 +39,7 @@ async function fetchGuildSettings() {
       guild_name: item.guild_name ?? '',
       teacher_role_id: item.teacher_role_id ?? '',
       teacher_log_channel_id: item.teacher_log_channel_id ?? '',
+      command_audit_channel_id: item.command_audit_channel_id ?? '',
       _originGuildId: item.guild_id ?? '',
       _localOnly: false,
       _pendingDelete: false,
@@ -105,6 +107,7 @@ async function saveAll() {
       guild_name: row.guild_name.trim() || null,
       teacher_role_id: row.teacher_role_id.trim() || null,
       teacher_log_channel_id: row.teacher_log_channel_id.trim() || null,
+      command_audit_channel_id: row.command_audit_channel_id.trim() || null,
       _pendingDelete: row._pendingDelete === true,
     }))
     .filter((row) => row.guild_id.length > 0 && !row._pendingDelete)
@@ -199,10 +202,11 @@ onUnmounted(() => {
 
     <div class="bg-white border border-slate-200 rounded-xl overflow-hidden">
       <div class="grid grid-cols-12 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
-        <div class="col-span-3 px-3 py-2">guild_id</div>
-        <div class="col-span-3 px-3 py-2">guild_name</div>
-        <div class="col-span-3 px-3 py-2">teacher_role_id</div>
+        <div class="col-span-2 px-3 py-2">guild_id</div>
+        <div class="col-span-2 px-3 py-2">guild_name</div>
+        <div class="col-span-2 px-3 py-2">teacher_role_id</div>
         <div class="col-span-2 px-3 py-2">teacher_log_channel_id</div>
+        <div class="col-span-3 px-3 py-2">command_audit_channel_id</div>
         <div class="col-span-1 px-3 py-2 text-center">操作</div>
       </div>
 
@@ -217,17 +221,20 @@ onUnmounted(() => {
             row._pendingDelete ? 'bg-rose-50/70' : '',
           ]"
         >
-          <div class="col-span-3 p-2">
+          <div class="col-span-2 p-2">
             <input v-model="row.guild_id" :disabled="row._pendingDelete" class="w-full border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-400" placeholder="1500..." />
           </div>
-          <div class="col-span-3 p-2">
+          <div class="col-span-2 p-2">
             <input v-model="row.guild_name" :disabled="row._pendingDelete" class="w-full border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-400" placeholder="VTA test" />
           </div>
-          <div class="col-span-3 p-2">
+          <div class="col-span-2 p-2">
             <input v-model="row.teacher_role_id" :disabled="row._pendingDelete" class="w-full border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-400" placeholder="老師角色 ID" />
           </div>
           <div class="col-span-2 p-2">
             <input v-model="row.teacher_log_channel_id" :disabled="row._pendingDelete" class="w-full border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-400" placeholder="teacher 頻道 ID" />
+          </div>
+          <div class="col-span-3 p-2">
+            <input v-model="row.command_audit_channel_id" :disabled="row._pendingDelete" class="w-full border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-400" placeholder="指令紀錄頻道 ID" />
           </div>
           <div class="col-span-1 p-2 flex items-center justify-center gap-1">
             <button @click="removeRow(index)" class="p-1.5 text-rose-600 hover:bg-rose-50 rounded" :title="row._pendingDelete ? '取消刪除' : '標記刪除'">
@@ -251,7 +258,7 @@ onUnmounted(() => {
     </button>
 
     <p class="text-xs text-slate-500">
-      teacher_role_id 與 teacher_log_channel_id 可先留空，Bot 會 fallback 到 .env 或同名 teacher 頻道；但多班建議明確填入。
+      teacher_role_id 與 teacher_log_channel_id 可先留空，Bot 會 fallback 到 .env 或同名 teacher 頻道；多班建議明確填入。command_audit_channel_id 建議明確填入，Bot 僅使用資料庫設定。
     </p>
   </div>
 </template>

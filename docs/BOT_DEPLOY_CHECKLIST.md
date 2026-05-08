@@ -21,7 +21,7 @@ DISCORD_GUILD_ID=
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
 GEMINI_API_KEY=
-GEMINI_MODEL=gemma-3-27b-it
+GEMINI_MODEL=gemini-3.1-flash-lite-preview
 QUESTION_MODEL=gemini-3.1-flash-lite-preview
 TEACHER_ROLE_ID=
 FRONTEND_BASE_URL=https://teacher-dashboard-two-mauve.vercel.app
@@ -82,3 +82,4 @@ npm run bot:start
 1. 還原最近 bot 程式變更
 2. 保留資料庫不回滾
 3. 重啟回上一版 bot
+

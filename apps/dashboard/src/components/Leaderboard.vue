@@ -160,10 +160,15 @@ watch(selectedCategory, () => {
  * 判斷最新戰況中每筆資料的顯示狀態
  */
 function getStatus(item) {
-  const qType = item.question_bank?.question_type
+  const qType = String(item.question_bank?.question_type || '').trim().toLowerCase()
   
-  // 條件一（優先攔截待批改狀態）： 當題目類型不是選擇題，且狀態確實為待批改 (pending)
-  if (qType !== 'multiple_choice' && item.status === 'pending') {
+  // 問卷不需批改，固定顯示已提交
+  if (qType === 'survey') {
+    return 'submitted'
+  }
+
+  // 只有簡答題會顯示待批改
+  if (qType === 'short_answer' && item.status === 'pending') {
     return 'pending'
   }
   // 條件二（明確答對）
@@ -264,6 +269,12 @@ defineExpose({
               <div class="flex items-center gap-1 text-orange-600 bg-orange-50 px-3 py-1 rounded-full text-sm font-semibold border border-orange-200">
                 <Clock class="w-5 h-5" />
                 <span>待批改</span>
+              </div>
+            </template>
+            <template v-else-if="getStatus(item) === 'submitted'">
+              <div class="flex items-center gap-1 text-sky-700 bg-sky-50 px-3 py-1 rounded-full text-sm font-semibold border border-sky-200">
+                <CheckCircle2 class="w-5 h-5" />
+                <span>已提交</span>
               </div>
             </template>
             <template v-else-if="getStatus(item) === 'correct'">

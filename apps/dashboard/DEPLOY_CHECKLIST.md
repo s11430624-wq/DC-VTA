@@ -28,7 +28,7 @@ Serverless env:
 
 ```env
 GEMINI_API_KEY=...
-GEMINI_MODEL=gemma-3-27b-it
+GEMINI_MODEL=gemini-3.1-flash-lite-preview
 ```
 
 備註：
@@ -73,3 +73,4 @@ FRONTEND_BASE_URL=https://teacher-dashboard-two-mauve.vercel.app
 - 不要把 Supabase `service_role` 放在前端
 - 不要把機密金鑰寫進 client-side bundle
 - 不要再設定舊的 webhook env 當作正式依賴
+

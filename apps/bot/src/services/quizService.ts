@@ -19,7 +19,7 @@ export type UserQuizStats = {
 };
 
 export function isRankEligibleResponse(response: QuizResponse): boolean {
-    return response.status !== 'pending';
+    return response.status === 'graded' || response.status === null || response.status === undefined;
 }
 
 export async function getExistingResponse(
@@ -140,6 +140,7 @@ export async function getUserQuizStats(userId: string): Promise<UserQuizStats> {
         accuracyPercent: totalAnswered === 0 ? 0 : Math.round((correctCount / totalAnswered) * 100),
     };
 }
+
 
 export async function getQuizResponsesByUserIds(userIds: string[]): Promise<QuizResponse[]> {
     if (userIds.length === 0) {

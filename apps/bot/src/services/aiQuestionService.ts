@@ -1,23 +1,9 @@
 import { randomUUID } from 'crypto';
 import { createMultipleChoiceQuestion, QuestionRecord } from './questionService';
 import { supabase } from './supabase';
+import { generateModelText } from './llmService';
 
-const geminiApiKey = process.env.GEMINI_API_KEY;
-const questionModel = process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview';
-
-if (!geminiApiKey) {
-    throw new Error('缺少必要環境變數：GEMINI_API_KEY');
-}
-
-type GeminiResponse = {
-    candidates?: Array<{
-        content?: {
-            parts?: Array<{
-                text?: string;
-            }>;
-        };
-    }>;
-};
+const getQuestionModel = () => process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview';
 
 export type GeneratedQuestionPayload = {
     category: string;
@@ -25,6 +11,12 @@ export type GeneratedQuestionPayload = {
     options: string[];
     correct_answer: 'A' | 'B' | 'C' | 'D';
     explanation: string;
+};
+
+export type GeneratedShortAnswerPayload = {
+    category: string;
+    content: string;
+    rubric: string;
 };
 
 export type QuestionDraftRecord = {
@@ -58,6 +50,16 @@ const QUESTION_GENERATION_PROMPT = [
     'JSON 結構必須是 {"category":"...","content":"...","options":["...","...","...","..."],"correct_answer":"A","explanation":"..."}。',
 ].join('\n');
 
+const SHORT_ANSWER_GENERATION_PROMPT = [
+    '你是課堂測驗出題器。',
+    '請根據老師需求產生一題高品質的簡答題。',
+    '必須使用繁體中文。',
+    '請輸出題目內容(content)與評分規準(rubric)。',
+    'rubric 必須可用於教師評分，請具體列出重點。',
+    '只輸出 JSON，不要輸出 Markdown，不要輸出說明文字。',
+    'JSON 結構必須是 {"category":"...","content":"...","rubric":"..."}。',
+].join('\n');
+
 const isMissingTableError = (error: { code?: string; message?: string }) => {
     const message = error.message?.toLowerCase() ?? '';
     return error.code === 'PGRST205' || message.includes(DRAFT_TABLE) || message.includes('relation');
@@ -75,10 +77,16 @@ function stripCodeFences(rawText: string): string {
     return trimmed;
 }
 
+function normalizeOptionText(rawOption: string): string {
+    return rawOption
+        .replace(/^\s*[A-DＡ-Ｄ][\.\、\)\:：]\s*/i, '')
+        .trim();
+}
+
 function parseGeneratedQuestion(rawText: string): GeneratedQuestionPayload {
     const parsed = JSON.parse(stripCodeFences(rawText)) as Partial<GeneratedQuestionPayload>;
     const options = Array.isArray(parsed.options)
-        ? parsed.options.map((option) => String(option).trim()).filter((option) => option.length > 0)
+        ? parsed.options.map((option) => normalizeOptionText(String(option))).filter((option) => option.length > 0)
         : [];
     const correctAnswer = parsed.correct_answer;
 
@@ -107,46 +115,56 @@ function parseGeneratedQuestion(rawText: string): GeneratedQuestionPayload {
     };
 }
 
-async function generateQuestionJson(teacherPrompt: string): Promise<GeneratedQuestionPayload> {
-    const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${questionModel}:generateContent?key=${geminiApiKey}`,
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                contents: [
-                    {
-                        role: 'user',
-                        parts: [
-                            {
-                                text: `${QUESTION_GENERATION_PROMPT}\n\n老師需求：${teacherPrompt}`,
-                            },
-                        ],
-                    },
-                ],
-                generationConfig: {
-                    temperature: 0.7,
-                    responseMimeType: 'application/json',
-                },
-            }),
-        },
-    );
+function parseGeneratedShortAnswerQuestion(rawText: string): GeneratedShortAnswerPayload {
+    const parsed = JSON.parse(stripCodeFences(rawText)) as Partial<GeneratedShortAnswerPayload>;
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Gemini 題目生成失敗：${response.status} ${errorText}`);
+    if (typeof parsed.content !== 'string' || parsed.content.trim().length === 0) {
+        throw new Error('AI 產生的簡答題缺少 content。');
     }
 
-    const data = (await response.json()) as GeminiResponse;
-    const rawText = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('').trim();
+    if (typeof parsed.category !== 'string' || parsed.category.trim().length === 0) {
+        throw new Error('AI 產生的簡答題缺少 category。');
+    }
+
+    if (typeof parsed.rubric !== 'string' || parsed.rubric.trim().length === 0) {
+        throw new Error('AI 產生的簡答題缺少 rubric。');
+    }
+
+    return {
+        category: parsed.category.trim(),
+        content: parsed.content.trim(),
+        rubric: parsed.rubric.trim(),
+    };
+}
+
+async function generateQuestionJson(teacherPrompt: string): Promise<GeneratedQuestionPayload> {
+    const rawText = await generateModelText({
+        model: getQuestionModel(),
+        prompt: `${QUESTION_GENERATION_PROMPT}\n\n老師需求：${teacherPrompt}`,
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+    });
 
     if (!rawText) {
         throw new Error('Gemini 沒有回傳題目內容。');
     }
 
     return parseGeneratedQuestion(rawText);
+}
+
+async function generateShortAnswerQuestionJson(teacherPrompt: string): Promise<GeneratedShortAnswerPayload> {
+    const rawText = await generateModelText({
+        model: getQuestionModel(),
+        prompt: `${SHORT_ANSWER_GENERATION_PROMPT}\n\n老師需求：${teacherPrompt}`,
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+    });
+
+    if (!rawText) {
+        throw new Error('Gemini 沒有回傳簡答題內容。');
+    }
+
+    return parseGeneratedShortAnswerQuestion(rawText);
 }
 
 async function saveDraft(record: QuestionDraftRecord): Promise<void> {
@@ -318,6 +336,10 @@ export async function generateQuestionDraft(userId: string, teacherPrompt: strin
 
     await saveDraft(record);
     return record;
+}
+
+export async function generateShortAnswerQuestionPayload(teacherPrompt: string): Promise<GeneratedShortAnswerPayload> {
+    return generateShortAnswerQuestionJson(teacherPrompt);
 }
 
 export async function reviseQuestionDraft(

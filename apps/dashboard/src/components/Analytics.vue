@@ -21,6 +21,10 @@ const sortBy = ref('latest')
 const selectedGroup = ref('all')
 const expandedQuestions = ref(new Set())
 
+function normalizeQuestionType(rawType) {
+  return String(rawType || '').trim().toLowerCase()
+}
+
 // 獲取所有答題記錄（包含問題和學生資訊）
 async function fetchAnalytics() {
   loading.value = true
@@ -98,16 +102,19 @@ const questionStats = computed(() => {
     if (!question) return // 跳過已刪除的問題
     
     if (!grouped[questionId]) {
+      const questionType = normalizeQuestionType(question.question_type)
       grouped[questionId] = {
         questionId: questionId,
         question: question,
-        isShortAnswer: question.question_type === 'short_answer',
+        isShortAnswer: questionType === 'short_answer',
+        isSurvey: questionType === 'survey',
         totalAttempts: 0,
         correctCount: 0,
         incorrectCount: 0,
         hasPending: false,
         totalScore: 0,
         gradedCount: 0,
+        latestSubmissionAt: null,
         students: []
       }
     }
@@ -115,10 +122,12 @@ const questionStats = computed(() => {
     const stat = grouped[questionId]
     stat.totalAttempts++
     
-    if (response.is_correct) {
-      stat.correctCount++
-    } else {
-      stat.incorrectCount++
+    if (!stat.isShortAnswer && !stat.isSurvey) {
+      if (response.is_correct) {
+        stat.correctCount++
+      } else {
+        stat.incorrectCount++
+      }
     }
 
     // 簡答題：追蹤待批改狀態與累積分數
@@ -130,6 +139,11 @@ const questionStats = computed(() => {
         stat.totalScore += response.score
         stat.gradedCount++
       }
+    }
+
+    const submittedAt = response.created_at ? new Date(response.created_at).getTime() : 0
+    if (submittedAt > 0 && (!stat.latestSubmissionAt || submittedAt > stat.latestSubmissionAt)) {
+      stat.latestSubmissionAt = submittedAt
     }
     
     // 添加學生詳情
@@ -151,7 +165,7 @@ const questionStats = computed(() => {
   // 轉換為數組並計算準確率
   let result = Object.values(grouped).map(stat => {
     // 判斷是否為搶答題（簡答題不算搶答）
-    stat.isSpeedQuiz = !stat.isShortAnswer && stat.students.some(s => s.score === 5);
+    stat.isSpeedQuiz = !stat.isShortAnswer && !stat.isSurvey && stat.students.some(s => s.score === 5);
 
     // 計算簡答題平均分
     stat.avgScore = stat.gradedCount > 0
@@ -199,6 +213,12 @@ const questionStats = computed(() => {
             s.badgeClass = 'bg-red-100 text-red-700 border border-red-200'
           }
         }
+      } else if (stat.isSurvey) {
+        s.rankIcon = '🗳️';
+        s.statusText = '已提交';
+        s.cardClass = 'bg-sky-50 border-sky-200';
+        s.textClass = 'font-semibold text-sky-800';
+        s.badgeClass = 'bg-sky-100 text-sky-700 border border-sky-200';
       } else {
         // ── 選擇題 / 搶答題的卡片樣式（原有邏輯）──
         // 分配一般名次圖示 (給排版用)
@@ -239,9 +259,10 @@ const questionStats = computed(() => {
 
     return {
       ...stat,
+      displaySentAt: stat.question.last_sent_at || (stat.latestSubmissionAt ? new Date(stat.latestSubmissionAt).toISOString() : null),
       accuracyRate: stat.totalAttempts > 0 
-        ? Math.round((stat.correctCount / stat.totalAttempts) * 100) 
-        : 0
+        ? Math.round((stat.correctCount / stat.totalAttempts) * 100)
+        : null
     };
   })
 
@@ -269,12 +290,12 @@ const filteredStats = computed(() => {
   // 排序
   if (sortBy.value === 'hardest') {
     // 按準確率排序（最低的在前，即最難的問題）
-    filtered.sort((a, b) => a.accuracyRate - b.accuracyRate)
+    filtered.sort((a, b) => (a.accuracyRate ?? 101) - (b.accuracyRate ?? 101))
   } else {
-    // 按發送時間排序
+    // 按發送時間排序（優先 displaySentAt：last_sent_at，若無則回退最近提交時間）
     filtered.sort((a, b) => {
-      const timeA = a.question.last_sent_at ? new Date(a.question.last_sent_at).getTime() : 0;
-      const timeB = b.question.last_sent_at ? new Date(b.question.last_sent_at).getTime() : 0;
+      const timeA = a.displaySentAt ? new Date(a.displaySentAt).getTime() : 0;
+      const timeB = b.displaySentAt ? new Date(b.displaySentAt).getTime() : 0;
 
       if (timeA === 0 && timeB === 0) return 0;
       if (timeA === 0) return 1; // 未發送的在底下
@@ -304,6 +325,10 @@ const studentSortBy = ref('correctness')
 
 function getSortedStudents(students) {
   return [...students].sort((a, b) => {
+    const questionType = normalizeQuestionType(a.questionType)
+    if (questionType === 'survey') {
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    }
     if (studentSortBy.value === 'fastest') {
       return (a.reactionTime || 9999) - (b.reactionTime || 9999);
     } else {
@@ -430,16 +455,22 @@ defineExpose({
                 >
                   ✍️ 簡答題
                 </span>
+                <span
+                  v-if="stat.isSurvey"
+                  class="px-2 py-1 text-xs font-semibold bg-sky-100 text-sky-700 border border-sky-200 rounded"
+                >
+                  🗳️ 問卷題
+                </span>
                 <!-- 待批改提示 -->
                 <span
-                  v-if="stat.hasPending"
+                  v-if="stat.isShortAnswer && stat.hasPending"
                   class="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200 rounded"
                 >
                   ⏳ 待批改
                 </span>
                 <!-- 選擇題：準確率 Badge -->
                 <span
-                  v-if="!stat.isShortAnswer && !stat.isSpeedQuiz"
+                  v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz"
                   :class="[
                     'px-2 py-1 text-xs font-semibold rounded',
                     getAccuracyColor(stat.accuracyRate)
@@ -454,7 +485,7 @@ defineExpose({
                   ⚡ 搶答挑戰
                 </span>
                 <span class="text-xs text-gray-500 ml-0 sm:ml-2 w-full sm:w-auto mt-1 sm:mt-0">
-                  發送時間: {{ stat.question.last_sent_at ? new Date(stat.question.last_sent_at).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) : '尚未發送' }}
+                  發送時間: {{ stat.displaySentAt ? new Date(stat.displaySentAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) : '尚未發送' }}
                 </span>
               </div>
               <p class="text-sm sm:text-base text-gray-800 mb-3 line-clamp-2">
@@ -462,7 +493,7 @@ defineExpose({
               </p>
 
               <!-- 準確率進度條（只有選擇題且非搶答才顯示） -->
-              <div v-if="!stat.isSpeedQuiz && !stat.isShortAnswer" class="mb-4">
+              <div v-if="!stat.isSpeedQuiz && !stat.isShortAnswer && !stat.isSurvey" class="mb-4">
                 <div class="w-full bg-gray-200 rounded-full h-2">
                   <div class="h-2 rounded-full transition-all duration-500" 
                     :class="
@@ -482,7 +513,7 @@ defineExpose({
                 </div>
 
                 <!-- 選擇題的答對/答錯統計 -->
-                <template v-if="!stat.isShortAnswer && !stat.isSpeedQuiz">
+                <template v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz">
                   <div class="flex items-center gap-1 text-green-600">
                     <CheckCircle2 class="w-4 h-4" />
                     <span>答對<span class="hidden sm:inline">:</span> {{ stat.correctCount }}</span>
@@ -521,6 +552,11 @@ defineExpose({
                     <span>{{ stat.students.filter(s => s.status === 'pending').length }} 份待批改</span>
                   </div>
                 </template>
+                <template v-if="stat.isSurvey">
+                  <div class="flex items-center gap-1 text-sky-700">
+                    <span>顯示問卷填寫內容（不計答對/答錯）</span>
+                  </div>
+                </template>
               </div>
             </div>
             <div class="ml-2 sm:ml-4 shrink-0 mt-1">
@@ -548,7 +584,7 @@ defineExpose({
                   學生答題詳情 (顯示 {{ stat.displayStudents.length }} 人)
                 </h4>
                 <select
-                  v-if="!stat.isShortAnswer"
+                  v-if="!stat.isShortAnswer && !stat.isSurvey"
                   v-model="studentSortBy"
                   class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none w-full sm:w-auto bg-white text-gray-700"
                 >
@@ -589,12 +625,12 @@ defineExpose({
                   </div>
 
                   <!-- 簡答題：學生回答 & AI 回饋 -->
-                  <div v-if="stat.isShortAnswer && (student.answerText || student.aiFeedback)" class="mb-3 space-y-2">
+                  <div v-if="(stat.isShortAnswer || stat.isSurvey) && (student.answerText || student.aiFeedback)" class="mb-3 space-y-2">
                     <div v-if="student.answerText" class="bg-purple-50 border border-purple-100 rounded-lg p-3">
-                      <p class="text-xs font-medium text-purple-600 mb-1">📝 學生回答</p>
+                      <p class="text-xs font-medium text-purple-600 mb-1">{{ stat.isSurvey ? '🗳️ 問卷填寫內容' : '📝 學生回答' }}</p>
                       <p class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{{ student.answerText }}</p>
                     </div>
-                    <div v-if="student.aiFeedback" class="bg-blue-50 border border-blue-100 rounded-lg p-3">
+                    <div v-if="stat.isShortAnswer && student.aiFeedback" class="bg-blue-50 border border-blue-100 rounded-lg p-3">
                       <p class="text-xs font-medium text-blue-600 mb-1">🤖 AI 回饋</p>
                       <p class="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">{{ student.aiFeedback }}</p>
                     </div>
@@ -604,12 +640,17 @@ defineExpose({
                     <span class="text-sm text-gray-500 font-mono">
                       {{ student.studentId }}
                     </span>
-                    <template v-if="!stat.isShortAnswer">
+                    <template v-if="!stat.isShortAnswer && !stat.isSurvey">
                       <span v-if="student.reactionTime != null" class="text-sm font-medium" :class="student.reactionTime < 10 ? 'text-amber-600' : 'text-gray-600'">
                         ⚡ {{ student.reactionTime }} 秒
                       </span>
                       <span v-else class="text-sm text-gray-400">
                         ⚡ --
+                      </span>
+                    </template>
+                    <template v-else-if="stat.isSurvey">
+                      <span class="text-sm text-gray-500">
+                        {{ new Date(student.createdAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) }}
                       </span>
                     </template>
                     <template v-else>

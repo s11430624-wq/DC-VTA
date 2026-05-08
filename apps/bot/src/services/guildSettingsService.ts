@@ -5,6 +5,7 @@ export type GuildSettingsRecord = {
     guild_name: string | null;
     teacher_role_id: string | null;
     teacher_log_channel_id: string | null;
+    command_audit_channel_id: string | null;
 };
 
 const isMissingGuildSettingsTable = (error: { code?: string; message?: string }) => {
@@ -20,7 +21,7 @@ const normalizeOptionalId = (value: string | null | undefined) => {
 export async function getGuildSettings(guildId: string): Promise<GuildSettingsRecord | null> {
     const result = await supabase
         .from('guild_settings')
-        .select('guild_id, guild_name, teacher_role_id, teacher_log_channel_id')
+        .select('guild_id, guild_name, teacher_role_id, teacher_log_channel_id, command_audit_channel_id')
         .eq('guild_id', guildId)
         .maybeSingle();
 
@@ -40,6 +41,7 @@ export async function upsertGuildSettingsFromRuntime(input: {
     guildName: string | null;
     teacherRoleId?: string | null;
     teacherLogChannelId?: string | null;
+    commandAuditChannelId?: string | null;
 }): Promise<void> {
     const existing = await getGuildSettings(input.guildId);
     const payload = {
@@ -51,6 +53,9 @@ export async function upsertGuildSettingsFromRuntime(input: {
         teacher_log_channel_id: input.teacherLogChannelId === undefined
             ? existing?.teacher_log_channel_id ?? null
             : normalizeOptionalId(input.teacherLogChannelId),
+        command_audit_channel_id: input.commandAuditChannelId === undefined
+            ? existing?.command_audit_channel_id ?? null
+            : normalizeOptionalId(input.commandAuditChannelId),
     };
 
     const result = await supabase
@@ -70,4 +75,9 @@ export async function getTeacherRoleIdForGuild(guildId: string): Promise<string 
 export async function getTeacherLogChannelIdForGuild(guildId: string): Promise<string | null> {
     const settings = await getGuildSettings(guildId);
     return normalizeOptionalId(settings?.teacher_log_channel_id) ?? normalizeOptionalId(process.env.TEACHER_LOG_CHANNEL_ID);
+}
+
+export async function getCommandAuditChannelIdForGuild(guildId: string): Promise<string | null> {
+    const settings = await getGuildSettings(guildId);
+    return normalizeOptionalId(settings?.command_audit_channel_id);
 }

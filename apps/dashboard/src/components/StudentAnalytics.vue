@@ -274,8 +274,8 @@ const categoryStats = computed(() => {
   const stats = {}
   
   studentResponses.value.forEach(r => {
-    // 略過簡答題，只計算選擇題的數據
-    if (r.question_bank?.question_type === 'short_answer') return;
+    // 略過簡答題與問卷題，只計算選擇題的數據
+    if (r.question_bank?.question_type === 'short_answer' || r.question_bank?.question_type === 'survey') return;
 
     const cat = r.question_bank?.category || '未分類 (Uncategorized)'
     if (!stats[cat]) {
@@ -587,6 +587,11 @@ onMounted(() => {
                           🎯 {{ res.score }} 分
                         </span>
                       </template>
+                      <template v-else-if="res.question_bank?.question_type === 'survey'">
+                        <span class="inline-flex items-center gap-1 text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold">
+                          📝 問卷
+                        </span>
+                      </template>
                       <template v-else>
                         <span v-if="res.is_correct" class="inline-flex items-center gap-1 text-green-700 bg-green-100 px-2 py-0.5 rounded text-[10px] font-bold">
                           <CheckCircle2 class="w-3 h-3" /> 對
@@ -613,7 +618,7 @@ onMounted(() => {
                 <!-- 卡片：該生回答 -->
                 <td class="block md:table-cell px-3 py-2 md:p-4 text-gray-700 font-medium text-xs md:text-sm md:border-l md:border-gray-50 border-t md:border-t-0 border-gray-50">
                   <!-- 簡答題：顯示答案文字 -->
-                  <template v-if="res.question_bank?.question_type === 'short_answer'">
+                  <template v-if="res.question_bank?.question_type === 'short_answer' || res.question_bank?.question_type === 'survey'">
                     <div class="md:hidden text-gray-500 text-xs mb-1">學生回答</div>
                     <div
                       v-if="res.answer_text"
@@ -623,8 +628,8 @@ onMounted(() => {
                       {{ res.answer_text }}
                     </div>
                     <span v-else class="text-gray-400 text-xs">（未作答）</span>
-                    <!-- AI 評語 -->
-                    <div v-if="res.ai_feedback" class="mt-2 bg-purple-50 border border-purple-100 rounded-lg p-2.5">
+                    <!-- AI 評語（僅簡答題） -->
+                    <div v-if="res.question_bank?.question_type === 'short_answer' && res.ai_feedback" class="mt-2 bg-purple-50 border border-purple-100 rounded-lg p-2.5">
                       <p class="text-[10px] font-semibold text-purple-600 mb-1">🤖 AI 評語</p>
                       <p class="text-xs text-purple-800 leading-relaxed whitespace-pre-wrap line-clamp-3 hover:line-clamp-none cursor-pointer">{{ res.ai_feedback }}</p>
                     </div>
@@ -646,6 +651,11 @@ onMounted(() => {
                     </span>
                     <span v-else class="inline-flex items-center gap-1 text-blue-700 bg-blue-100 px-2 py-1 rounded text-xs font-bold">
                       🎯 {{ res.score }} 分
+                    </span>
+                  </template>
+                  <template v-else-if="res.question_bank?.question_type === 'survey'">
+                    <span class="inline-flex items-center gap-1 text-emerald-700 bg-emerald-100 px-2 py-1 rounded text-xs font-bold">
+                      📝 問卷
                     </span>
                   </template>
                   <template v-else>

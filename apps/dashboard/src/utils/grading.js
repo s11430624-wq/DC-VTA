@@ -17,11 +17,19 @@ export function isShortAnswerQuestion(response) {
   return response?.question_bank?.question_type === 'short_answer'
 }
 
+export function isSurveyQuestion(response) {
+  return response?.question_bank?.question_type === 'survey'
+}
+
 export function isPendingShortAnswerResponse(response) {
   return isShortAnswerQuestion(response) && response?.status === 'pending'
 }
 
 export function isResponseEligibleForAccuracy(response) {
+  if (isSurveyQuestion(response)) {
+    return false
+  }
+
   if (isShortAnswerQuestion(response)) {
     return response?.status === 'graded' && normalizeShortAnswerScore(response?.score) !== null
   }
@@ -30,6 +38,10 @@ export function isResponseEligibleForAccuracy(response) {
 }
 
 export function isResponseCountedAsCorrect(response) {
+  if (isSurveyQuestion(response)) {
+    return false
+  }
+
   if (isShortAnswerQuestion(response)) {
     return deriveShortAnswerCorrectness(response?.score) === true
   }

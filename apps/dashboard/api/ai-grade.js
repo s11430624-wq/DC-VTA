@@ -1,4 +1,4 @@
-const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemma-3-27b-it'
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview'
 
 function stripCodeFences(rawText) {
   const trimmed = String(rawText || '').trim()
