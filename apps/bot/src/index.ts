@@ -21,6 +21,7 @@
 } from 'discord.js';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { approveQuestionDraft, clearDraftsByUser, getDraftById } from './services/aiQuestionService';
 import { askAgent, buildAgentSessionId } from './services/agentService';
@@ -63,15 +64,63 @@ import { isTeacher, requireTeacher } from './utils/roleGuard';
 // 載入環境變數
 dotenv.config();
 
+const ensureVertexCredentialsFromEnv = () => {
+    const provider = (process.env.GEMINI_PROVIDER || 'gemini').toLowerCase();
+    if (provider !== 'vertex') {
+        return;
+    }
+
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        return;
+    }
+
+    const rawJson = process.env.GCP_SERVICE_ACCOUNT_JSON?.trim();
+    if (!rawJson) {
+        return;
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+        parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    } catch {
+        throw new Error('GCP_SERVICE_ACCOUNT_JSON 不是合法 JSON，請檢查 Render 環境變數內容。');
+    }
+
+    if (typeof parsed.private_key === 'string') {
+        parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+    }
+
+    const credentialPath = path.join(os.tmpdir(), `dc-vta-gcp-${process.pid}.json`);
+    fs.writeFileSync(credentialPath, `${JSON.stringify(parsed)}\n`, { encoding: 'utf8' });
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = credentialPath;
+};
+
+ensureVertexCredentialsFromEnv();
+
 const requiredEnvVars = [
     'DISCORD_TOKEN',
     'DISCORD_CLIENT_ID',
     'SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
-    'GEMINI_API_KEY',
 ] as const;
 
-const missingEnvVars = requiredEnvVars.filter((key) => !process.env[key]);
+const provider = (process.env.GEMINI_PROVIDER || 'gemini').toLowerCase();
+const providerRequiredEnvVars =
+    provider === 'vertex'
+        ? ['GCP_PROJECT_ID']
+        : ['GEMINI_API_KEY'];
+const missingEnvVars = [
+    ...requiredEnvVars.filter((key) => !process.env[key]),
+    ...providerRequiredEnvVars.filter((key) => !process.env[key]),
+];
+
+if (provider === 'vertex') {
+    const hasCredentialPath = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+    const hasCredentialJson = Boolean(process.env.GCP_SERVICE_ACCOUNT_JSON);
+    if (!hasCredentialPath && !hasCredentialJson) {
+        missingEnvVars.push('GOOGLE_APPLICATION_CREDENTIALS 或 GCP_SERVICE_ACCOUNT_JSON');
+    }
+}
 
 if (missingEnvVars.length > 0) {
     throw new Error(`缺少必要環境變數：${missingEnvVars.join(', ')}`);
