@@ -10,26 +10,40 @@
     GatewayIntentBits,
     MessageFlags,
     ModalBuilder,
+    PermissionFlagsBits,
     REST,
     Routes,
+    StringSelectMenuBuilder,
     TextInputBuilder,
     TextInputStyle,
     type APIEmbedField,
+    type StringSelectMenuInteraction,
 } from 'discord.js';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 import { approveQuestionDraft, clearDraftsByUser, getDraftById } from './services/aiQuestionService';
 import { askAgent, buildAgentSessionId } from './services/agentService';
 import { clearAgentMessages } from './services/agentMemoryService';
+import { appendChatMessage } from './services/chatMemoryService';
 import { clearRevisionTarget, setRevisionTarget } from './services/agentRevisionStateService';
 import {
     approveQuestionBatchDraft,
     clearBatchDraftsByUser,
+    createSingleQuestionFromBatchDraft,
+    deleteSingleQuestionFromBatchDraft,
     discardQuestionBatchDraft,
     generateQuestionBatchDraft,
+    getBatchDraftById,
+    QuestionBatchDraftRecord,
+    reviseSingleQuestionFromBatchDraft,
 } from './services/batchQuestionService';
-import { getTeacherLogChannelIdForGuild, upsertGuildSettingsFromRuntime } from './services/guildSettingsService';
+import { getCommandAuditChannelIdForGuild, getTeacherLogChannelIdForGuild, upsertGuildSettingsFromRuntime } from './services/guildSettingsService';
 import { ensureDiscordChannelGroup, ensureGroupMember, setCurrentQuestionForGroup } from './services/groupService';
-import { addMultipleChoiceQuestion, createShortAnswerQuestion, getQuestionById, getRecentQuestions } from './services/questionService';
+import { generateImageFromPrompt } from './services/imageService';
+import { generateModelText } from './services/llmService';
+import { createMultipleChoiceQuestion, createShortAnswerQuestion, createSurveyQuestion, getQuestionById, getRecentQuestions } from './services/questionService';
+import { runStudioTask } from './services/studioService';
 import {
     getExistingResponse,
     getAllQuizResponses,
@@ -68,6 +82,25 @@ const clientId = process.env.DISCORD_CLIENT_ID!;
 const frontendBaseUrl = (process.env.FRONTEND_BASE_URL || 'http://localhost:5173').replace(/\/$/, '');
 const DEFAULT_OPEN_DURATION_MINUTES = 3;
 const MAX_REACTION_TIME_SECONDS = 3600;
+const DEFAULT_POLL_DURATION_HOURS = 24;
+const MAX_POLL_OPTIONS = 10;
+const TEACHER_COMMAND_DEFAULT_PERMISSIONS = PermissionFlagsBits.ManageGuild.toString();
+const ENV_FILE_PATH = path.resolve(process.cwd(), '.env');
+const SUPPORTED_MODELS = [
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-3.1-pro-preview',
+] as const;
+type SupportedModel = typeof SUPPORTED_MODELS[number];
+const DEFAULT_LOCATION_BY_MODEL: Record<SupportedModel, string> = {
+    'gemini-2.5-flash-lite': 'us-central1',
+    'gemini-2.5-flash': 'us-central1',
+    'gemini-2.5-pro': 'us-central1',
+    'gemini-3.1-flash-lite-preview': 'global',
+    'gemini-3.1-pro-preview': 'global',
+};
 
 // 初始化機器人客戶端
 const client = new Client({
@@ -79,11 +112,237 @@ const client = new Client({
     ],
 });
 
+const readEnvFileLines = () => {
+    if (!fs.existsSync(ENV_FILE_PATH)) {
+        return [] as string[];
+    }
+    return fs.readFileSync(ENV_FILE_PATH, 'utf8').split(/\r?\n/);
+};
+
+const upsertEnvValue = (lines: string[], key: string, value: string) => {
+    const nextLine = `${key}=${value}`;
+    const index = lines.findIndex((line) => line.startsWith(`${key}=`));
+    if (index >= 0) {
+        lines[index] = nextLine;
+        return;
+    }
+    lines.push(nextLine);
+};
+
+const applyModelRuntimeConfig = (model: SupportedModel, location: string) => {
+    process.env.GEMINI_MODEL = model;
+    process.env.QUESTION_MODEL = model;
+    process.env.GCP_LOCATION = location;
+};
+
+const saveModelConfigToEnv = (model: SupportedModel, location: string) => {
+    const lines = readEnvFileLines();
+    upsertEnvValue(lines, 'GEMINI_MODEL', model);
+    upsertEnvValue(lines, 'QUESTION_MODEL', model);
+    upsertEnvValue(lines, 'GCP_LOCATION', location);
+    fs.writeFileSync(ENV_FILE_PATH, `${lines.join('\n').replace(/\n*$/, '\n')}`, 'utf8');
+};
+
+const findAnnouncementChannel = (interaction: ChatInputCommandInteraction) => {
+    const guild = interaction.guild;
+    if (!guild) return null;
+    const channel = guild.channels.cache.find(
+        (item) => item.isTextBased() && item.name === '公告',
+    );
+    return channel && 'send' in channel ? channel : null;
+};
+
+const rememberChannelEvent = async (channelId: string, userId: string, content: string, role: 'user' | 'assistant' = 'user') => {
+    const sessionId = buildAgentSessionId(userId, channelId);
+    await appendChatMessage({
+        session_id: sessionId,
+        user_id: userId,
+        role,
+        content,
+    });
+};
+
+type MentionIntentResult = {
+    intent: 'image' | 'chat';
+    prompt: string;
+};
+
+const extractFirstJsonObject = (raw: string) => {
+    const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i];
+        if (ch === '{') {
+            if (depth === 0) start = i;
+            depth += 1;
+        } else if (ch === '}') {
+            depth -= 1;
+            if (depth === 0 && start >= 0) {
+                return text.slice(start, i + 1);
+            }
+        }
+    }
+    return text;
+};
+
+const VISUAL_CUES = [
+    'hyper-realistic', 'cinematic', '8k', 'masterpiece', 'photorealistic', 'highly detailed',
+    'lighting', 'composition', 'shot', 'render', 'pixel art', 'anime style', 'oil painting',
+    'surreal', 'wide angle', 'depth of field', 'ultra detailed', 'concept art',
+    '寫實', '電影感', '高細節', '構圖', '光線', '像素風', '插畫風', '油畫風', '超現實', '景深',
+];
+
+const looksLikeImagePrompt = (text: string) => {
+    const input = text.trim();
+    if (input.length < 24) return false;
+
+    const lower = input.toLowerCase();
+    const cueHits = VISUAL_CUES.reduce((count, cue) => count + (lower.includes(cue.toLowerCase()) ? 1 : 0), 0);
+    const commaCount = (input.match(/[,，]/g) ?? []).length;
+    const hasResolution = /\b(?:4k|8k|16k|1080p|4:3|16:9|9:16)\b/i.test(input);
+    const longEnglishRun = /[a-zA-Z]/.test(input) && input.length > 120;
+
+    return cueHits >= 2 || (cueHits >= 1 && commaCount >= 3) || hasResolution || longEnglishRun;
+};
+
+const buildImageReplyText = async (prompt: string) => {
+    try {
+        const answer = await generateModelText({
+            model: process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview',
+            prompt: [
+                '你是 Discord 助手，剛完成一張圖片生成。',
+                '請用繁體中文輸出 1 句自然、簡短、有人味的回覆。',
+                '不要重複完整 prompt，不要使用引號，不要加條列。',
+                `圖片需求大意：${prompt}`,
+            ].join('\n'),
+            temperature: 0.7,
+            maxOutputTokens: 80,
+        });
+        const text = answer.trim();
+        if (text.length > 0) return text;
+    } catch {
+        // Fallback below.
+    }
+
+    return '好，這張幫你生好了，看看這個版本合不合你想像。';
+};
+
+const detectMentionIntent = async (rawPrompt: string): Promise<MentionIntentResult> => {
+    const classifierPrompt = [
+        '你是意圖分類器。',
+        '請判斷使用者是否在要求「生成圖片」。',
+        '只輸出 JSON，不要輸出其他文字。',
+        '格式：{"intent":"image|chat","prompt":"..."}',
+        '規則：',
+        '- 若使用者想要你畫圖、做圖、生成圖片、輸出圖像，intent=image',
+        '- 其他一般問答或聊天 intent=chat',
+        '- prompt 請回傳去掉命令語氣後的核心內容；若 intent=chat 則可原樣回傳',
+        `使用者輸入：${rawPrompt}`,
+    ].join('\n');
+
+    const answer = await generateModelText({
+        model: process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview',
+        prompt: classifierPrompt,
+        temperature: 0,
+        maxOutputTokens: 120,
+        responseMimeType: 'application/json',
+    });
+
+    const parsed = JSON.parse(extractFirstJsonObject(answer)) as Partial<MentionIntentResult>;
+    const intent = parsed.intent === 'image' ? 'image' : 'chat';
+    const prompt = (parsed.prompt ?? rawPrompt).trim() || rawPrompt;
+    return { intent, prompt };
+};
+
 // 定義 Slash Commands
 const commands = [
     {
+        name: 'poll_create',
+        description: '建立 Discord 原生投票',
+        options: [
+            {
+                name: 'question',
+                description: '投票問題',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'options',
+                description: '選項，請用 | 分隔，例如：西式|中式|不吃早餐',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'duration_hours',
+                description: '投票時長（小時，預設 24）',
+                type: ApplicationCommandOptionType.Integer,
+                required: false,
+                min_value: 1,
+                max_value: 168,
+            },
+            {
+                name: 'multi_select',
+                description: '是否允許複選（預設 否）',
+                type: ApplicationCommandOptionType.Boolean,
+                required: false,
+            },
+        ],
+    },
+    {
         name: 'help',
         description: '顯示 VTA Bot 的可用指令清單',
+    },
+    {
+        name: 'image',
+        description: '生成一張圖片',
+        options: [
+            {
+                name: 'prompt',
+                description: '圖片描述，例如：賽博龐克台北夜景',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+        ],
+    },
+    {
+        name: 'model',
+        description: '查看或切換目前使用的模型',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
+        dm_permission: false,
+        options: [
+            {
+                name: 'name',
+                description: '要切換的模型名稱（不填則只顯示目前設定）',
+                type: ApplicationCommandOptionType.String,
+                required: false,
+                choices: SUPPORTED_MODELS.map((model) => ({ name: model, value: model })),
+            },
+        ],
+    },
+    {
+        name: 'agent',
+        description: '執行工作室任務（摘要/研究）',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
+        dm_permission: false,
+        options: [
+            {
+                name: 'action',
+                description: '要執行的任務',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+                choices: [
+                    { name: 'summarize_channel', value: 'summarize_channel' },
+                    { name: 'research', value: 'research' },
+                ],
+            },
+            {
+                name: 'prompt',
+                description: 'research 任務的查詢主題',
+                type: ApplicationCommandOptionType.String,
+                required: false,
+            },
+        ],
     },
     {
         name: 'link',
@@ -110,10 +369,12 @@ const commands = [
     {
         name: 'list',
         description: '列出最近 10 筆題庫資料',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
     },
     {
         name: 'question',
         description: '查看指定題目詳情',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
         options: [
             {
                 name: 'id',
@@ -126,18 +387,62 @@ const commands = [
     {
         name: 'add',
         description: '老師新增一題選擇題',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
         options: [
             {
                 name: 'content',
-                description: '題目內容',
+                description: '題目內容（例如：今晚吃什麼最均衡？）',
                 type: ApplicationCommandOptionType.String,
                 required: true,
+            },
+            {
+                name: 'option_a',
+                description: '選項 A',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'option_b',
+                description: '選項 B',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'option_c',
+                description: '選項 C',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'option_d',
+                description: '選項 D',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'correct',
+                description: '正確答案（A/B/C/D）',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+                choices: [
+                    { name: 'A', value: 'A' },
+                    { name: 'B', value: 'B' },
+                    { name: 'C', value: 'C' },
+                    { name: 'D', value: 'D' },
+                ],
+            },
+            {
+                name: 'explanation',
+                description: '解析（選填）',
+                type: ApplicationCommandOptionType.String,
+                required: false,
             },
         ],
     },
     {
         name: 'add_short',
         description: '老師新增一題短答題',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
         options: [
             {
                 name: 'content',
@@ -156,6 +461,7 @@ const commands = [
     {
         name: 'open',
         description: '老師開放一題題目',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
         options: [
             {
                 name: 'id',
@@ -165,17 +471,37 @@ const commands = [
             },
             {
                 name: 'duration_minutes',
-                description: '開放作答時間（分鐘，預設 3 分鐘）',
+                description: '開放作答時間（分鐘，預設 3 分鐘，最多 1440 分鐘）',
                 type: ApplicationCommandOptionType.Integer,
                 required: false,
                 min_value: 1,
-                max_value: 60,
+                max_value: 1440,
+            },
+        ],
+    },
+    {
+        name: 'add_survey',
+        description: '老師新增一題問卷題（不需 rubric）',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
+        options: [
+            {
+                name: 'content',
+                description: '問卷題目內容',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'allow_repeat_answer',
+                description: '是否允許同一位學生重複提交（預設：否）',
+                type: ApplicationCommandOptionType.Boolean,
+                required: false,
             },
         ],
     },
     {
         name: 'check',
         description: '老師查看指定題目的答題統計',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
         options: [
             {
                 name: 'id',
@@ -188,10 +514,12 @@ const commands = [
     {
         name: 'grading_queue',
         description: '老師查看目前待批改的簡答題清單',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
     },
     {
         name: 'grade_link',
         description: '老師取得簡答題批改頁連結',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
         options: [
             {
                 name: 'id',
@@ -217,11 +545,11 @@ const commands = [
     },
     {
         name: 'ask',
-        description: '向課堂助教 Agent 發問',
+        description: '向課堂助教 Agent 發問或要求資料分析',
         options: [
             {
                 name: 'prompt',
-                description: '你想問 Agent 的問題',
+                description: '你想問 Agent 的問題，例如班級分析、個人診斷、出題需求',
                 type: ApplicationCommandOptionType.String,
                 required: true,
             },
@@ -234,6 +562,7 @@ const commands = [
     {
         name: 'batch_generate',
         description: '老師批次產生多題四選一題目草稿',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
         options: [
             {
                 name: 'prompt',
@@ -308,6 +637,24 @@ const hasEmbedding = (embedding: unknown[] | string | null | undefined) => {
 const getStringMetadata = (metadata: QuestionMetadata | null, key: string) => {
     const value = metadata?.[key];
     return typeof value === 'string' && value.trim().length > 0 ? value : null;
+};
+
+const getBooleanMetadata = (metadata: QuestionMetadata | null, key: string, fallback = false) => {
+    const value = metadata?.[key];
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === 'true' || normalized === '1') return true;
+        if (normalized === 'false' || normalized === '0') return false;
+    }
+    return fallback;
+};
+
+const isSurveyRepeatAllowed = (question: Awaited<ReturnType<typeof getQuestionById>>): boolean => {
+    if (!question || question.question_type !== 'survey') return false;
+    const parsed = parseQuestionMetadata(question.metadata);
+    if (!parsed.ok) return false;
+    return getBooleanMetadata(parsed.metadata, 'allow_repeat_answer', false);
 };
 
 const getOptionsText = (metadata: QuestionMetadata | string | null) => {
@@ -401,6 +748,14 @@ const formatQuestionDetail = (question: QuestionDetail) => {
         );
     }
 
+    if (questionType === 'survey') {
+        lines.push(
+            '🧾 題型說明：問卷題（無評分規準）',
+            `🔁 重複作答：${getBooleanMetadata(parsedMetadata.metadata, 'allow_repeat_answer', false) ? '允許' : '不允許'}`,
+            '',
+        );
+    }
+
     lines.push(`Vector：${hasEmbedding(question.embedding) ? '✅ 已生成' : '⬜ NULL'}`);
 
     return lines.join('\n');
@@ -433,25 +788,27 @@ const formatCheckResult = async (questionId: number) => {
 
     const responses = await getResponsesByQuestionId(questionId);
 
-    if (question.question_type === 'short_answer') {
+    if (question.question_type === 'short_answer' || question.question_type === 'survey') {
         const gradingLink = buildGradingLink({ questionId, status: 'pending' });
 
         if (responses.length === 0) {
+            if (question.question_type === 'survey') {
+                return `📊 第 ${questionId} 題目前還沒有問卷提交。`;
+            }
             return `📊 第 ${questionId} 題目前還沒有短答提交。\n\n🔗 批改頁面：\n${gradingLink}`;
         }
 
         const users = await getUsersByIds([...new Set(responses.map((response) => response.user_id))]);
         const usersById = new Map(users.map((user) => [user.user_id, user]));
         const lines = [
-            `📊 第 ${questionId} 題短答提交`,
+            question.question_type === 'survey' ? `📊 第 ${questionId} 題問卷提交` : `📊 第 ${questionId} 題短答提交`,
             '',
             '📝 題目：',
             truncateContent(question.content, 80),
             '',
             `👥 已提交人數：${responses.length} 人`,
-            `🔗 批改頁面：${gradingLink}`,
-            '',
-            ...responses.slice(0, 20).map((response, index) => {
+            ...(question.question_type === 'short_answer' ? [`🔗 批改頁面：${gradingLink}`, ''] : []),
+            ...responses.slice(0, 60).map((response, index) => {
                 const user = usersById.get(response.user_id);
                 const displayName = user?.display_name || '未知使用者';
                 const studentId = user?.student_id || '無學號';
@@ -460,8 +817,8 @@ const formatCheckResult = async (questionId: number) => {
             }),
         ];
 
-        if (responses.length > 20) {
-            lines.push('', '提交內容過長，僅顯示前 20 筆。');
+        if (responses.length > 60) {
+            lines.push('', '提交內容過長，僅顯示前 60 筆。');
         }
 
         return lines.join('\n');
@@ -532,6 +889,41 @@ const getGuildGroupName = (
         : (guildId ? `discord-guild-${guildId}` : null);
 };
 
+const parsePollOptions = (raw: string): string[] => raw
+    .split('|')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .slice(0, MAX_POLL_OPTIONS);
+
+const autoAssignRoleAfterLink = async (
+    interaction: ChatInputCommandInteraction,
+): Promise<{ assigned: boolean; message: string | null }> => {
+    if (!interaction.guild || !interaction.guildId) {
+        return { assigned: false, message: '⚠️ 目前不在伺服器情境，無法自動發放身分組。' };
+    }
+
+    const studentRoleId = process.env.STUDENT_ROLE_ID ?? null;
+    const targetRoleId = studentRoleId;
+
+    if (!targetRoleId) {
+        return { assigned: false, message: '⚠️ 尚未設定可自動發放的身分組 ID（請設定 `STUDENT_ROLE_ID`）。' };
+    }
+
+    try {
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+        if (member.roles.cache.has(targetRoleId)) {
+            const roleName = interaction.guild.roles.cache.get(targetRoleId)?.name ?? '學生身分組';
+            return { assigned: false, message: `ℹ️ 你已經有身分組：${roleName}` };
+        }
+
+        await member.roles.add(targetRoleId, 'Auto assigned after /link');
+        const roleName = interaction.guild.roles.cache.get(targetRoleId)?.name ?? '學生身分組';
+        return { assigned: true, message: `🎖️ 已自動發放身分組：${roleName}` };
+    } catch (error) {
+        return { assigned: false, message: `⚠️ 綁定成功，但自動發放身分組失敗：${formatError(error)}` };
+    }
+};
+
 const resolveGuildGroupId = async (
     guildId: string | null,
     guild: unknown,
@@ -570,25 +962,45 @@ const buildGradingLink = (params: { questionId?: number; responseId?: number; st
     return `${frontendBaseUrl}/?${searchParams.toString()}`;
 };
 
+type RuntimeGuildLike = {
+    id?: string;
+    name?: string;
+    channels?: { cache?: Map<string, unknown> | { values: () => Iterable<unknown> } };
+};
+
+const resolveGuildTextChannelById = async (channelId: string | null, warningTitle: string) => {
+    if (!channelId) {
+        return null;
+    }
+
+    try {
+        const fetched = await client.channels.fetch(channelId);
+        if (fetched && 'send' in fetched && typeof fetched.send === 'function') {
+            return fetched;
+        }
+    } catch (error) {
+        console.warn(`⚠️ ${warningTitle}：`, formatError(error));
+    }
+
+    return null;
+};
+
 const resolveTeacherLogChannel = async (guild: unknown) => {
     if (!guild || typeof guild !== 'object' || !('channels' in guild)) {
         return null;
     }
 
-    const runtimeGuild = guild as { id?: string; name?: string; channels?: { cache?: Map<string, unknown> | { values: () => Iterable<unknown> } } };
+    const runtimeGuild = guild as RuntimeGuildLike;
     const configuredTeacherLogChannelId = runtimeGuild.id
         ? await getTeacherLogChannelIdForGuild(runtimeGuild.id)
         : null;
 
-    if (configuredTeacherLogChannelId) {
-        try {
-            const fetched = await client.channels.fetch(configuredTeacherLogChannelId);
-            if (fetched && 'send' in fetched && typeof fetched.send === 'function') {
-                return fetched;
-            }
-        } catch (error) {
-            console.warn('⚠️ 無法取得 TEACHER_LOG_CHANNEL_ID 指定的頻道：', formatError(error));
-        }
+    const configuredChannel = await resolveGuildTextChannelById(
+        configuredTeacherLogChannelId,
+        '無法取得 TEACHER_LOG_CHANNEL_ID 指定的頻道',
+    );
+    if (configuredChannel) {
+        return configuredChannel;
     }
 
     const channels = runtimeGuild.channels?.cache;
@@ -630,6 +1042,142 @@ const resolveTeacherLogChannel = async (guild: unknown) => {
     }
 
     return null;
+};
+
+const resolveCommandAuditChannel = async (guild: unknown) => {
+    if (!guild || typeof guild !== 'object' || !('channels' in guild)) {
+        return null;
+    }
+
+    const runtimeGuild = guild as RuntimeGuildLike;
+    const configuredCommandAuditChannelId = runtimeGuild.id
+        ? await getCommandAuditChannelIdForGuild(runtimeGuild.id)
+        : null;
+
+    const configuredChannel = await resolveGuildTextChannelById(
+        configuredCommandAuditChannelId,
+        '無法取得 COMMAND_AUDIT_CHANNEL_ID 指定的頻道',
+    );
+    if (configuredChannel) {
+        return configuredChannel;
+    }
+
+    const channels = runtimeGuild.channels?.cache;
+    if (!channels || typeof channels.values !== 'function') {
+        return null;
+    }
+
+    const fallbackNames = new Set(['command-log', 'bot-log', '指令紀錄', '指令日誌']);
+    for (const channel of channels.values()) {
+        if (
+            channel
+            && typeof channel === 'object'
+            && 'name' in channel
+            && typeof (channel as { name?: unknown }).name === 'string'
+            && fallbackNames.has((channel as { name: string }).name)
+            && 'send' in channel
+            && typeof (channel as { send?: unknown }).send === 'function'
+        ) {
+            if (!configuredCommandAuditChannelId && runtimeGuild.id && 'id' in channel) {
+                const discoveredChannelId = typeof (channel as { id?: unknown }).id === 'string'
+                    ? (channel as { id: string }).id
+                    : null;
+                if (discoveredChannelId) {
+                    try {
+                        await upsertGuildSettingsFromRuntime({
+                            guildId: runtimeGuild.id,
+                            guildName: typeof runtimeGuild.name === 'string' ? runtimeGuild.name : null,
+                            commandAuditChannelId: discoveredChannelId,
+                        });
+                    } catch (error) {
+                        console.warn('⚠️ 自動回寫 command_audit_channel_id 失敗：', formatError(error));
+                    }
+                }
+            }
+
+            return channel as { send: (payload: { embeds: EmbedBuilder[] }) => Promise<unknown> };
+        }
+    }
+
+    return null;
+};
+
+const formatCommandOptions = (interaction: ChatInputCommandInteraction) => {
+    if (!interaction.options.data || interaction.options.data.length === 0) {
+        return '（無參數）';
+    }
+
+    return interaction.options.data
+        .map((option) => `${option.name}=${option.value ?? 'null'}`)
+        .join(', ');
+};
+
+const buildCommandResultSummary = (status: 'success' | 'error', errorText: string | null) => {
+    if (status === 'success') {
+        return '成功';
+    }
+
+    return `失敗：${(errorText ?? '未知錯誤').slice(0, 200)}`;
+};
+
+const notifyCommandUsage = async (params: {
+    interaction: ChatInputCommandInteraction;
+    status: 'success' | 'error';
+    errorText: string | null;
+}) => {
+    const channel = await resolveCommandAuditChannel(params.interaction.guild);
+    if (!channel) {
+        return;
+    }
+
+    const sourceChannelName = (
+        params.interaction.channel
+        && typeof params.interaction.channel === 'object'
+        && 'name' in params.interaction.channel
+        && typeof (params.interaction.channel as { name?: unknown }).name === 'string'
+    )
+        ? (params.interaction.channel as { name: string }).name
+        : '未知頻道';
+
+    const memberRoleNames = (
+        params.interaction.member
+        && typeof params.interaction.member === 'object'
+        && 'roles' in params.interaction.member
+        && params.interaction.member.roles
+        && typeof params.interaction.member.roles === 'object'
+        && 'cache' in params.interaction.member.roles
+        && (params.interaction.member.roles as { cache?: { values?: () => Iterable<unknown> } }).cache
+        && typeof (params.interaction.member.roles as { cache?: { values?: () => Iterable<unknown> } }).cache?.values === 'function'
+    )
+        ? [...(params.interaction.member.roles as { cache: { values: () => Iterable<unknown> } }).cache.values()]
+            .map((role) => (
+                role
+                && typeof role === 'object'
+                && 'name' in role
+                && typeof (role as { name?: unknown }).name === 'string'
+            )
+                ? (role as { name: string }).name
+                : null)
+            .filter((name): name is string => Boolean(name))
+            .slice(0, 8)
+            .join(', ')
+        : '';
+
+    const embed = new EmbedBuilder()
+        .setColor(params.status === 'success' ? 0x16a34a : 0xdc2626)
+        .setTitle(`指令紀錄：/${params.interaction.commandName}`)
+        .addFields(
+            { name: '執行者', value: `${params.interaction.user.tag}\n<@${params.interaction.user.id}>`, inline: false },
+            { name: 'Discord ID', value: params.interaction.user.id, inline: true },
+            { name: '角色', value: memberRoleNames || '無角色資訊', inline: true },
+            { name: '來源頻道', value: sourceChannelName, inline: true },
+            { name: '伺服器', value: params.interaction.guild?.name ?? '未知伺服器', inline: true },
+            { name: '參數', value: formatCommandOptions(params.interaction), inline: false },
+            { name: '結果', value: buildCommandResultSummary(params.status, params.errorText), inline: false },
+        )
+        .setTimestamp(new Date());
+
+    await channel.send({ embeds: [embed] });
 };
 
 const notifyTeacherLinkSuccess = async (params: {
@@ -704,45 +1252,191 @@ const getDraftPreviewText = (draft: {
     options: string[];
     correctAnswer: 'A' | 'B' | 'C' | 'D';
     explanation: string;
-}) => [
+}, categoryOverride?: string) => {
+    const normalizedOptions = draft.options.map((option) => option.replace(/^\s*[A-DＡ-Ｄ][\.\、\)\:：]\s*/i, '').trim());
+    return [
     '以下是題目草稿，請確認：',
     '',
-    `分類：${draft.category}`,
+    `分類：${categoryOverride ?? draft.category}`,
     `題目：${draft.content}`,
     '',
-    `A. ${draft.options[0] ?? ''}`,
-    `B. ${draft.options[1] ?? ''}`,
-    `C. ${draft.options[2] ?? ''}`,
-    `D. ${draft.options[3] ?? ''}`,
+    `A. ${normalizedOptions[0] ?? ''}`,
+    `B. ${normalizedOptions[1] ?? ''}`,
+    `C. ${normalizedOptions[2] ?? ''}`,
+    `D. ${normalizedOptions[3] ?? ''}`,
     '',
     `答案：${draft.correctAnswer}`,
     `解析：${draft.explanation || '無'}`,
     '',
     '如果可以，按「同意建立」。如果要改，按「我要修改」後再用 /ask 補充修改要求。',
 ].join('\n');
+};
 
-const getBatchPreviewText = (questions: Array<{
-    category: string;
-    content: string;
-    options: string[];
-    correct_answer: 'A' | 'B' | 'C' | 'D';
-    explanation: string;
-}>) => [
-    '以下是批次題目草稿，請確認：',
-    '',
-    ...questions.flatMap((question, index) => ([
-        `第 ${index + 1} 題｜分類：${question.category}`,
-        `題目：${question.content}`,
-        `A. ${question.options[0] ?? ''}`,
-        `B. ${question.options[1] ?? ''}`,
-        `C. ${question.options[2] ?? ''}`,
-        `D. ${question.options[3] ?? ''}`,
-        `答案：${question.correct_answer}`,
-        `解析：${question.explanation || '無'}`,
+const normalizePreviewOption = (option: string) => option.replace(/^\s*[A-DＡ-Ｄ][\.\、\)\:：]\s*/i, '').trim();
+
+const buildBatchActionCustomId = (action: 'create_batch_item' | 'delete_batch_item' | 'revise_batch_item', batchId: string, itemId: string) =>
+    `${action}:${batchId}:${itemId}`;
+
+const buildBatchRevisionModalCustomId = (batchId: string, itemId: string) => `revise_batch_modal:${batchId}:${itemId}`;
+
+const parseBatchItemCustomId = (customId: string) => {
+    const match = /^(create_batch_item|delete_batch_item|revise_batch_item|revise_batch_modal):([^:]+):([^:]+)$/.exec(customId);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        action: match[1],
+        batchId: match[2],
+        itemId: match[3],
+    };
+};
+
+const parseBatchSelectionCustomId = (customId: string) => {
+    const match = /^select_batch_item:([^:]+)$/.exec(customId);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        batchId: match[1],
+    };
+};
+
+const resolveBatchSelection = (draft: QuestionBatchDraftRecord, selectedItemId?: string | null) => {
+    const visibleQuestions = draft.questions.filter((question) => question.status !== 'deleted');
+    const selectedQuestion = visibleQuestions.find((question) => question.itemId === selectedItemId)
+        ?? visibleQuestions.find((question) => question.status === 'active')
+        ?? visibleQuestions[0]
+        ?? null;
+    const selectedIndex = selectedQuestion
+        ? visibleQuestions.findIndex((question) => question.itemId === selectedQuestion.itemId)
+        : -1;
+
+    return {
+        visibleQuestions,
+        selectedQuestion,
+        selectedIndex,
+    };
+};
+
+const getBatchPreviewText = (draft: QuestionBatchDraftRecord, categoryOverride?: string, selectedItemId?: string | null) => {
+    const visibleQuestions = draft.questions.filter((question) => question.status !== 'deleted');
+    const pendingQuestions = draft.questions.filter((question) => question.status === 'active');
+    const { selectedQuestion, selectedIndex } = resolveBatchSelection(draft, selectedItemId);
+    const lines = [
+        '以下是批次題目草稿，請確認：',
         '',
-    ])),
-    '如果可以，按「全部建立」。如果不要這批草稿，按「全部作廢」。',
-].join('\n');
+    ];
+
+    if (visibleQuestions.length === 0) {
+        lines.push('目前沒有可顯示的題目。');
+    } else {
+        visibleQuestions.forEach((question, index) => {
+            const titleSuffix = question.status === 'created'
+                ? `｜已建立${question.createdQuestionId ? `（ID ${question.createdQuestionId}）` : ''}`
+                : '';
+
+            lines.push(`第 ${index + 1} 題｜分類：${categoryOverride ?? question.payload.category}${titleSuffix}`);
+            lines.push(`題目：${question.payload.content}`);
+            lines.push(`A. ${normalizePreviewOption(question.payload.options[0] ?? '')}`);
+            lines.push(`B. ${normalizePreviewOption(question.payload.options[1] ?? '')}`);
+            lines.push(`C. ${normalizePreviewOption(question.payload.options[2] ?? '')}`);
+            lines.push(`D. ${normalizePreviewOption(question.payload.options[3] ?? '')}`);
+            lines.push(`答案：${question.payload.correct_answer}`);
+            lines.push(`解析：${question.payload.explanation || '無'}`);
+            lines.push('');
+        });
+    }
+
+    if (selectedQuestion && selectedIndex >= 0) {
+        const selectedStatus = selectedQuestion.status === 'created'
+            ? `已建立${selectedQuestion.createdQuestionId ? `（ID ${selectedQuestion.createdQuestionId}）` : ''}`
+            : '可操作';
+        lines.push(`目前選取：第 ${selectedIndex + 1} 題｜${selectedStatus}`);
+        lines.push('');
+    }
+
+    if (pendingQuestions.length > 0) {
+        lines.push('請先用下拉選單選題，再按下方按鈕操作；也可以按「全部建立」一次建立剩餘題目。');
+    } else {
+        lines.push('目前沒有剩餘可建立的題目。若不要保留這份草稿，可按「全部作廢」。');
+    }
+
+    return lines.join('\n');
+};
+
+const buildBatchDraftComponents = (draft: QuestionBatchDraftRecord, selectedItemId?: string | null) => {
+    const hasPendingQuestions = draft.questions.some((question) => question.status === 'active');
+    const { visibleQuestions, selectedQuestion, selectedIndex } = resolveBatchSelection(draft, selectedItemId);
+    const rows: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [];
+
+    if (visibleQuestions.length > 0) {
+        rows.push(
+            new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(`select_batch_item:${draft.batchId}`)
+                    .setPlaceholder('選擇要操作的題目')
+                    .addOptions(
+                        visibleQuestions.map((question, index) => {
+                            const statusLabel = question.status === 'created'
+                                ? `已建立${question.createdQuestionId ? ` #${question.createdQuestionId}` : ''}`
+                                : '可操作';
+                            return {
+                                label: `第 ${index + 1} 題`,
+                                value: question.itemId,
+                                description: `${statusLabel}｜${question.payload.content.slice(0, 70)}`,
+                                default: question.itemId === selectedQuestion?.itemId,
+                            };
+                        }),
+                    ),
+            ),
+        );
+    }
+
+    if (selectedQuestion && selectedIndex >= 0) {
+        const isCreated = selectedQuestion.status === 'created';
+        rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+                .setCustomId(buildBatchActionCustomId('create_batch_item', draft.batchId, selectedQuestion.itemId))
+                .setLabel(isCreated ? `已建立${selectedQuestion.createdQuestionId ? ` #${selectedQuestion.createdQuestionId}` : ''}` : '建立這題')
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(isCreated),
+            new ButtonBuilder()
+                .setCustomId(buildBatchActionCustomId('revise_batch_item', draft.batchId, selectedQuestion.itemId))
+                .setLabel('重生這題')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(isCreated),
+            new ButtonBuilder()
+                .setCustomId(buildBatchActionCustomId('delete_batch_item', draft.batchId, selectedQuestion.itemId))
+                .setLabel('刪掉這題')
+                .setStyle(ButtonStyle.Danger)
+                .setDisabled(isCreated),
+        ));
+    }
+
+    const globalButtons = [
+        new ButtonBuilder()
+            .setCustomId(`approve_batch:${draft.batchId}`)
+            .setLabel('全部建立')
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(!hasPendingQuestions),
+        new ButtonBuilder()
+            .setCustomId(`discard_batch:${draft.batchId}`)
+            .setLabel('全部作廢')
+            .setStyle(ButtonStyle.Danger),
+    ];
+
+    return [
+        ...rows,
+        new ActionRowBuilder<ButtonBuilder>().addComponents(...globalButtons),
+    ];
+};
+
+const buildBatchDraftMessage = (draft: QuestionBatchDraftRecord, categoryOverride?: string, selectedItemId?: string | null) => ({
+    content: getBatchPreviewText(draft, categoryOverride, selectedItemId),
+    components: buildBatchDraftComponents(draft, selectedItemId),
+});
 
 const hasValidDraftPreview = (draft: {
     category: string;
@@ -756,6 +1450,36 @@ const hasValidDraftPreview = (draft: {
     && draft.options.every((option) => option.trim().length > 0)
     && ['A', 'B', 'C', 'D'].includes(draft.correctAnswer)
 );
+
+const hasValidShortAnswerDraftPreview = (draft: {
+    category: string;
+    content: string;
+    rubric: string;
+}) => (
+    draft.category.trim().length > 0
+    && draft.content.trim().length > 0
+    && draft.rubric.trim().length > 0
+);
+
+type PendingShortAnswerDraft = {
+    category: string;
+    content: string;
+    rubric: string;
+};
+
+type PendingPollDraft = {
+    question: string;
+    options: string[];
+    durationHours: number;
+    allowMultiselect: boolean;
+};
+
+const pendingShortAnswerDrafts = new Map<string, PendingShortAnswerDraft>();
+const pendingPollDrafts = new Map<string, PendingPollDraft>();
+
+const buildShortDraftSessionKey = (userId: string, channelId: string | null) => `${userId}:${channelId ?? 'dm'}`;
+const isShortDraftRevisionPrompt = (prompt: string) => /(修改|調整|改成|改為|重寫|優化|rubric|評分|難度|語氣|精簡|補充)/i.test(prompt);
+const isPollDraftRevisionPrompt = (prompt: string) => /(修改|調整|改成|改為|重寫|選項|複選|期限|時長|小時|精簡|補充)/i.test(prompt);
 
 const buildAnswerCustomId = (questionId: number, option: 'A' | 'B' | 'C' | 'D', openedAtMs: number, durationSeconds: number) =>
     `answer:qid=${questionId}:opt=${option}:open=${openedAtMs}:dur=${durationSeconds}`;
@@ -1022,16 +1746,17 @@ const handleShortAnswerButton = async (interaction: ButtonInteraction) => {
         return;
     }
 
-    const existingResponse = await getExistingResponse(interaction.user.id, parsedCustomId.questionId);
-    if (existingResponse) {
-        await safeReply(interaction, '⛔ 這一題你已經作答過了，每人只能提交一次。', true);
+    const questionId = parsedCustomId.questionId;
+    const question = await getQuestionById(questionId);
+    if (!question || (question.question_type !== 'short_answer' && question.question_type !== 'survey')) {
+        await safeReply(interaction, '找不到這個可文字作答的題目。', true);
         return;
     }
 
-    const questionId = parsedCustomId.questionId;
-    const question = await getQuestionById(questionId);
-    if (!question || question.question_type !== 'short_answer') {
-        await safeReply(interaction, '找不到這個短答題。', true);
+    const allowRepeatAnswer = isSurveyRepeatAllowed(question);
+    const existingResponse = await getExistingResponse(interaction.user.id, parsedCustomId.questionId);
+    if (existingResponse && !(question.question_type === 'survey' && allowRepeatAnswer)) {
+        await safeReply(interaction, '⛔ 這一題你已經作答過了，每人只能提交一次。', true);
         return;
     }
 
@@ -1111,36 +1836,215 @@ const handleDraftButton = async (interaction: ButtonInteraction) => {
     await safeReply(interaction, '未知的題目草稿操作。', true);
 };
 
-const handleBatchDraftButton = async (interaction: ButtonInteraction) => {
-    const [action, batchId] = interaction.customId.split(':');
+const handleShortDraftButton = async (interaction: ButtonInteraction) => {
+    const [action] = interaction.customId.split(':');
+    const sessionKey = buildShortDraftSessionKey(interaction.user.id, interaction.channelId);
+    const draft = pendingShortAnswerDrafts.get(sessionKey);
 
-    if (!batchId) {
-        await safeReply(interaction, '批次草稿按鈕格式錯誤。', true);
+    if (!draft) {
+        await safeReply(interaction, '這份簡答題草稿已失效或不存在，請重新用 /ask 產生。', true);
         return;
     }
 
-    if (action === 'approve_batch') {
+    if (action === 'approve_short_draft') {
         try {
-            const questions = await approveQuestionBatchDraft(
-                batchId,
-                interaction.user.id,
-                getGuildCategoryName(interaction.guild, interaction.guildId),
+            const question = await createShortAnswerQuestion({
+                content: draft.content,
+                rubric: draft.rubric,
+                category: getGuildCategoryName(interaction.guild, interaction.guildId),
+            });
+            pendingShortAnswerDrafts.delete(sessionKey);
+            await safeReply(
+                interaction,
+                `✅ 簡答題已建立。\nID：${question.id}\n題目：${question.content ?? '（無題目內容）'}\n可用指令：/open id:${question.id}`,
+                true,
             );
-            const lines = [
-                '✅ 批次題目已建立。',
-                ...questions.map((question, index) => `第 ${index + 1} 題：ID ${question.id}｜${question.content ?? '（無題目內容）'}`),
-            ];
-            await safeReply(interaction, lines.join('\n'), true);
         } catch (error) {
             await safeReply(interaction, `❌ ${formatError(error)}`, true);
         }
         return;
     }
 
-    if (action === 'discard_batch') {
+    if (action === 'revise_short_draft') {
+        await safeReply(
+            interaction,
+            [
+                '已保留這份簡答題草稿。',
+                '請再用 /ask 補充你要修改的內容（題目或 rubric 都可）。',
+                '例如：/ask prompt:把這題改成國中程度，rubric 改成內容40% 結構30% 用詞30%',
+            ].join('\n'),
+            true,
+        );
+        return;
+    }
+
+    await safeReply(interaction, '未知的簡答題草稿操作。', true);
+};
+
+const handlePollDraftButton = async (interaction: ButtonInteraction) => {
+    const [action] = interaction.customId.split(':');
+    const sessionKey = buildShortDraftSessionKey(interaction.user.id, interaction.channelId);
+    const draft = pendingPollDrafts.get(sessionKey);
+
+    if (!draft) {
+        await safeReply(interaction, '這份投票草稿已失效或不存在，請重新用 /ask 產生。', true);
+        return;
+    }
+
+    if (action === 'approve_poll_draft') {
         try {
-            await discardQuestionBatchDraft(batchId, interaction.user.id);
-            await safeReply(interaction, '✅ 這批題目草稿已作廢。', true);
+            if (!interaction.channel || !('send' in interaction.channel)) {
+                await safeReply(interaction, '無法取得目前頻道，請在伺服器文字頻道中操作。', true);
+                return;
+            }
+
+            await interaction.channel.send({
+                poll: {
+                    question: { text: draft.question },
+                    answers: draft.options.map((text) => ({ text })),
+                    duration: draft.durationHours,
+                    allowMultiselect: draft.allowMultiselect,
+                },
+            });
+            pendingPollDrafts.delete(sessionKey);
+            await safeReply(interaction, '✅ 已依草稿建立 Discord 原生投票。', true);
+        } catch (error) {
+            await safeReply(interaction, `❌ ${formatError(error)}`, true);
+        }
+        return;
+    }
+
+    if (action === 'revise_poll_draft') {
+        await safeReply(
+            interaction,
+            [
+                '已保留這份投票草稿。',
+                '請再用 /ask 補充你要修改的內容（題目、選項、時長、複選）。',
+                '例如：/ask prompt:把選項改成 4 個，並允許複選，期限 12 小時',
+            ].join('\n'),
+            true,
+        );
+        return;
+    }
+
+    await safeReply(interaction, '未知的投票草稿操作。', true);
+};
+
+const handleBatchDraftButton = async (interaction: ButtonInteraction) => {
+    const parsed = parseBatchItemCustomId(interaction.customId)
+        ?? (() => {
+            const [action, batchId] = interaction.customId.split(':');
+            return action && batchId ? { action, batchId, itemId: null } : null;
+        })();
+
+    if (!parsed?.batchId) {
+        await safeReply(interaction, '批次草稿按鈕格式錯誤。', true);
+        return;
+    }
+
+    const categoryOverride = getGuildCategoryName(interaction.guild, interaction.guildId);
+
+    if (parsed.action === 'create_batch_item') {
+        try {
+            if (!parsed.itemId) {
+                await safeReply(interaction, '批次單題按鈕格式錯誤。', true);
+                return;
+            }
+
+            const result = await createSingleQuestionFromBatchDraft(
+                parsed.batchId,
+                interaction.user.id,
+                parsed.itemId,
+                categoryOverride,
+            );
+            await interaction.update(buildBatchDraftMessage(result.draft, categoryOverride, parsed.itemId));
+            await interaction.followUp({
+                content: `✅ 已建立這題。\nID：${result.question.id}\n題目：${result.question.content ?? '（無題目內容）'}`,
+                flags: MessageFlags.Ephemeral,
+            });
+        } catch (error) {
+            await safeReply(interaction, `❌ ${formatError(error)}`, true);
+        }
+        return;
+    }
+
+    if (parsed.action === 'delete_batch_item') {
+        try {
+            if (!parsed.itemId) {
+                await safeReply(interaction, '批次單題按鈕格式錯誤。', true);
+                return;
+            }
+
+            const draft = await deleteSingleQuestionFromBatchDraft(parsed.batchId, interaction.user.id, parsed.itemId);
+            await interaction.update(buildBatchDraftMessage(draft, categoryOverride, parsed.itemId));
+            await interaction.followUp({
+                content: '✅ 這題已從批次草稿移除。',
+                flags: MessageFlags.Ephemeral,
+            });
+        } catch (error) {
+            await safeReply(interaction, `❌ ${formatError(error)}`, true);
+        }
+        return;
+    }
+
+    if (parsed.action === 'revise_batch_item') {
+        if (!parsed.itemId) {
+            await safeReply(interaction, '批次單題按鈕格式錯誤。', true);
+            return;
+        }
+
+        const modal = new ModalBuilder()
+            .setCustomId(buildBatchRevisionModalCustomId(parsed.batchId, parsed.itemId))
+            .setTitle('重生這一題');
+
+        const input = new TextInputBuilder()
+            .setCustomId('revision_prompt')
+            .setLabel('你想怎麼修改這題')
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setMaxLength(500)
+            .setPlaceholder('例如：改難一點，改成生活情境題，保留指標概念');
+
+        modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+        await interaction.showModal(modal);
+        return;
+    }
+
+    if (parsed.action === 'approve_batch') {
+        try {
+            const questions = await approveQuestionBatchDraft(
+                parsed.batchId,
+                interaction.user.id,
+                categoryOverride,
+            );
+            const refreshedDraft = await getBatchDraftById(parsed.batchId);
+            const lines = [
+                '✅ 批次題目已建立。',
+                ...questions.map((question, index) => `第 ${index + 1} 題：ID ${question.id}｜${question.content ?? '（無題目內容）'}`),
+            ];
+
+            if (refreshedDraft) {
+                await interaction.update(buildBatchDraftMessage(refreshedDraft, categoryOverride));
+                await interaction.followUp({
+                    content: lines.join('\n'),
+                    flags: MessageFlags.Ephemeral,
+                });
+            } else {
+                await safeReply(interaction, lines.join('\n'), true);
+            }
+        } catch (error) {
+            await safeReply(interaction, `❌ ${formatError(error)}`, true);
+        }
+        return;
+    }
+
+    if (parsed.action === 'discard_batch') {
+        try {
+            await discardQuestionBatchDraft(parsed.batchId, interaction.user.id);
+            await interaction.update({
+                content: '✅ 這批題目草稿已作廢。',
+                components: [],
+            });
         } catch (error) {
             await safeReply(interaction, `❌ ${formatError(error)}`, true);
         }
@@ -1148,6 +2052,29 @@ const handleBatchDraftButton = async (interaction: ButtonInteraction) => {
     }
 
     await safeReply(interaction, '未知的批次草稿操作。', true);
+};
+
+const handleBatchDraftSelection = async (interaction: StringSelectMenuInteraction) => {
+    const parsed = parseBatchSelectionCustomId(interaction.customId);
+    if (!parsed) {
+        await safeReply(interaction, '批次題號選單格式錯誤。', true);
+        return;
+    }
+
+    const selectedItemId = interaction.values[0];
+    if (!selectedItemId) {
+        await safeReply(interaction, '請先選擇要操作的題目。', true);
+        return;
+    }
+
+    const draft = await getBatchDraftById(parsed.batchId!);
+    if (!draft || draft.userId !== interaction.user.id) {
+        await safeReply(interaction, '這份批次草稿已失效、已建立或已被清除。請重新生成。', true);
+        return;
+    }
+
+    const categoryOverride = getGuildCategoryName(interaction.guild, interaction.guildId);
+    await interaction.update(buildBatchDraftMessage(draft, categoryOverride, selectedItemId));
 };
 
 // 當機器人準備就緒時觸發
@@ -1199,6 +2126,16 @@ client.on('guildCreate', async (guild) => {
 
 // 監聽使用者發送的互動指令
 client.on('interactionCreate', async (interaction) => {
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_batch_item:')) {
+        try {
+            await handleBatchDraftSelection(interaction);
+        } catch (error) {
+            console.error('❌ 批次題號選單處理失敗：', formatError(error));
+            await safeReply(interaction, '❌ 批次題號選單處理失敗，請稍後再試。', true);
+        }
+        return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('answer:')) {
         try {
             await handleAnswerButton(interaction);
@@ -1234,13 +2171,77 @@ client.on('interactionCreate', async (interaction) => {
 
     if (
         interaction.isButton()
-        && (interaction.customId.startsWith('approve_batch:') || interaction.customId.startsWith('discard_batch:'))
+        && (interaction.customId.startsWith('approve_short_draft:') || interaction.customId.startsWith('revise_short_draft:'))
+    ) {
+        try {
+            await handleShortDraftButton(interaction);
+        } catch (error) {
+            console.error('❌ 簡答題草稿處理失敗：', formatError(error));
+            await safeReply(interaction, '❌ 簡答題草稿處理失敗，請稍後再試。', true);
+        }
+        return;
+    }
+
+    if (
+        interaction.isButton()
+        && (interaction.customId.startsWith('approve_poll_draft:') || interaction.customId.startsWith('revise_poll_draft:'))
+    ) {
+        try {
+            await handlePollDraftButton(interaction);
+        } catch (error) {
+            console.error('❌ 投票草稿處理失敗：', formatError(error));
+            await safeReply(interaction, '❌ 投票草稿處理失敗，請稍後再試。', true);
+        }
+        return;
+    }
+
+    if (
+        interaction.isButton()
+        && (
+            interaction.customId.startsWith('approve_batch:')
+            || interaction.customId.startsWith('discard_batch:')
+            || interaction.customId.startsWith('create_batch_item:')
+            || interaction.customId.startsWith('delete_batch_item:')
+            || interaction.customId.startsWith('revise_batch_item:')
+        )
     ) {
         try {
             await handleBatchDraftButton(interaction);
         } catch (error) {
             console.error('❌ 批次草稿處理失敗：', formatError(error));
             await safeReply(interaction, '❌ 批次草稿處理失敗，請稍後再試。', true);
+        }
+        return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('revise_batch_modal:')) {
+        try {
+            const parsedCustomId = parseBatchItemCustomId(interaction.customId);
+            if (!parsedCustomId || !parsedCustomId.itemId) {
+                await safeReply(interaction, '批次重生視窗格式錯誤。', true);
+                return;
+            }
+
+            const revisionPrompt = interaction.fields.getTextInputValue('revision_prompt').trim();
+            const categoryOverride = getGuildCategoryName(interaction.guild, interaction.guildId);
+            const draft = await reviseSingleQuestionFromBatchDraft(
+                parsedCustomId.batchId!,
+                interaction.user.id,
+                parsedCustomId.itemId!,
+                revisionPrompt,
+            );
+
+            if (interaction.isFromMessage()) {
+                await interaction.update(buildBatchDraftMessage(draft, categoryOverride, parsedCustomId.itemId));
+                await interaction.followUp({
+                    content: '✅ 這題已依照你的要求重生。',
+                    flags: MessageFlags.Ephemeral,
+                });
+            } else {
+                await safeReply(interaction, '✅ 這題已依照你的要求重生。請回到原本的批次草稿訊息查看更新。', true);
+            }
+        } catch (error) {
+            await safeReply(interaction, `❌ ${formatError(error)}`, true);
         }
         return;
     }
@@ -1271,8 +2272,15 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
+            const targetQuestion = await getQuestionById(questionId);
+            if (!targetQuestion || (targetQuestion.question_type !== 'short_answer' && targetQuestion.question_type !== 'survey')) {
+                await safeReply(interaction, '找不到這個可文字作答的題目。', true);
+                return;
+            }
+
+            const allowRepeatAnswer = isSurveyRepeatAllowed(targetQuestion);
             const existingResponse = await getExistingResponse(interaction.user.id, questionId);
-            if (existingResponse) {
+            if (existingResponse && !(targetQuestion.question_type === 'survey' && allowRepeatAnswer)) {
                 await safeReply(interaction, '⛔ 這一題你已經作答過了，每人只能提交一次。', true);
                 return;
             }
@@ -1282,7 +2290,7 @@ client.on('interactionCreate', async (interaction) => {
                 await ensureGroupMember(groupId, interaction.user.id);
             }
 
-            await upsertQuizResponse({
+            const responsePayload = {
                 user_id: interaction.user.id,
                 question_id: questionId,
                 group_id: groupId,
@@ -1291,9 +2299,17 @@ client.on('interactionCreate', async (interaction) => {
                 reaction_time: calculateReactionTimeSeconds(parsedCustomId.openedAtMs),
                 answer_text: answerText,
                 status: 'pending',
-            });
+            };
 
-            await safeReply(interaction, '✅ 短答已提交。老師之後可以查看你的內容。', true);
+            await upsertQuizResponse(responsePayload);
+
+            await safeReply(
+                interaction,
+                targetQuestion.question_type === 'survey'
+                    ? '✅ 問卷已提交，感謝你的回覆。'
+                    : '✅ 短答已提交。老師之後可以查看你的內容。',
+                true,
+            );
         } catch (error) {
             console.error('❌ 短答提交失敗：', formatError(error));
             await safeReply(interaction, '❌ 短答提交失敗，請稍後再試。', true);
@@ -1304,6 +2320,8 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     const chatInteraction = interaction as ChatInputCommandInteraction;
+    let commandAuditStatus: 'success' | 'error' = 'success';
+    let commandAuditErrorText: string | null = null;
 
     try {
         // 處理 /help 指令
@@ -1311,27 +2329,33 @@ client.on('interactionCreate', async (interaction) => {
             const teacher = await isTeacher(chatInteraction);
             const studentCommands = [
                 '`/help` - 顯示此訊息',
+                '`/image prompt` - 生成圖片',
                 '`/link student_id name` - 綁定學號',
                 '`/me` - 查詢自己的綁定資料',
                 '`/rank limit` - 顯示目前班級伺服器的排行榜',
-                '`/ask prompt` - 向助教提問或查詢自己的成績',
+                '`/poll_create question options [duration_hours] [multi_select]` - 建立原生投票（options 用 | 分隔）',
+                '`/ask prompt` - 向助教提問；可做個人診斷、弱點整理、複習建議與一般問答',
                 '`/clear_memory` - 清除目前頻道中的 Agent 記憶與未確認題目草稿',
             ];
             const teacherCommands = [
+                '`/model [name]` - 查看或切換 Bot 使用模型',
+                '`/agent action [prompt]` - 執行工作室任務（摘要/研究）',
                 '`/list` - 顯示最近 10 筆題庫',
                 '`/question id` - 查看題目詳情',
-                '`/add content` - 老師新增選擇題',
+                '`/add content option_a option_b option_c option_d correct [explanation]` - 老師新增選擇題',
                 '`/add_short content rubric` - 老師新增短答題',
+                '`/add_survey content [allow_repeat_answer]` - 老師新增問卷題（可設定是否允許重複作答）',
                 '`/open id [duration_minutes]` - 老師開放題目',
                 '`/check id` - 老師查看答題統計',
                 '`/grading_queue` - 老師查看待批改簡答清單',
                 '`/grade_link id` - 老師取得指定短答題批改連結',
                 '`/batch_generate prompt count` - 老師批次產生 2 到 5 題草稿',
+                '`/ask prompt` - 可做班級分析、錯題熱點、學生觀察，也可產生題目或投票草稿',
             ];
 
             await chatInteraction.reply({
                 content: [
-                    '✅ **VTA Discord Bot 已成功切換為 Node.js 程式碼模式！**',
+                    '✅ **VTA Discord Bot 指令清單**',
                     '',
                     '可用指令：',
                     ...studentCommands,
@@ -1342,11 +2366,153 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
+        if (chatInteraction.commandName === 'model') {
+            if (!(await requireTeacher(chatInteraction))) return;
+
+            const selectedModel = chatInteraction.options.getString('name') as SupportedModel | null;
+
+            if (!selectedModel) {
+                const currentModel = process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || '未設定';
+                const currentQuestionModel = process.env.QUESTION_MODEL || '未設定';
+                const currentLocation = process.env.GCP_LOCATION || '未設定';
+                await safeReply(
+                    chatInteraction,
+                    [
+                        '🤖 目前模型設定',
+                        `GEMINI_MODEL: ${currentModel}`,
+                        `QUESTION_MODEL: ${currentQuestionModel}`,
+                        `GCP_LOCATION: ${currentLocation}`,
+                        `可選模型: ${SUPPORTED_MODELS.join(' | ')}`,
+                    ].join('\n'),
+                    true,
+                );
+                return;
+            }
+
+            const nextLocation = DEFAULT_LOCATION_BY_MODEL[selectedModel];
+            saveModelConfigToEnv(selectedModel, nextLocation);
+            applyModelRuntimeConfig(selectedModel, nextLocation);
+
+            const announcementChannel = findAnnouncementChannel(chatInteraction);
+            if (announcementChannel) {
+                await announcementChannel.send([
+                    '📢 模型已切換',
+                    `操作者：<@${chatInteraction.user.id}>`,
+                    `目前模型：\`${selectedModel}\``,
+                ].join('\n'));
+            }
+
+            await safeReply(
+                chatInteraction,
+                [
+                    '✅ 已更新模型設定',
+                    `GEMINI_MODEL: ${selectedModel}`,
+                    `QUESTION_MODEL: ${selectedModel}`,
+                    '設定已寫入 .env，並已套用到目前執行程序。',
+                    announcementChannel ? '已同步公告到 #公告 頻道。' : '找不到 #公告 頻道，未發送公告。',
+                ].join('\n'),
+                true,
+            );
+            return;
+        }
+
+        if (chatInteraction.commandName === 'agent') {
+            if (!(await requireTeacher(chatInteraction))) return;
+
+            const action = chatInteraction.options.getString('action', true) as 'summarize_channel' | 'research';
+            const prompt = chatInteraction.options.getString('prompt')?.trim();
+            const channelSessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
+
+            await chatInteraction.deferReply({ ephemeral: true });
+            const output = await runStudioTask({
+                action,
+                channelSessionId,
+                ...(prompt ? { prompt } : {}),
+            });
+            await chatInteraction.editReply(output);
+            return;
+        }
+
+        if (chatInteraction.commandName === 'poll_create') {
+            const question = chatInteraction.options.getString('question', true).trim();
+            const rawOptions = chatInteraction.options.getString('options', true);
+            const durationHours = chatInteraction.options.getInteger('duration_hours') ?? DEFAULT_POLL_DURATION_HOURS;
+            const allowMultiselect = chatInteraction.options.getBoolean('multi_select') ?? false;
+            const options = parsePollOptions(rawOptions);
+
+            if (question.length === 0) {
+                await safeReply(chatInteraction, '投票問題不能空白。', true);
+                return;
+            }
+
+            if (options.length < 2) {
+                await safeReply(chatInteraction, '至少要 2 個選項，請用 `|` 分隔，例如：`西式|中式|不吃早餐`。', true);
+                return;
+            }
+
+            if (!chatInteraction.channel || !('send' in chatInteraction.channel)) {
+                await safeReply(chatInteraction, '無法取得目前頻道，請在伺服器文字頻道中使用 /poll_create。', true);
+                return;
+            }
+
+            await chatInteraction.channel.send({
+                poll: {
+                    question: { text: question },
+                    answers: options.map((text) => ({ text })),
+                    duration: durationHours,
+                    allowMultiselect,
+                },
+            });
+
+            await safeReply(
+                chatInteraction,
+                [
+                    '✅ 已建立投票。',
+                    `問題：${question}`,
+                    `選項數：${options.length}`,
+                    `時長：${durationHours} 小時`,
+                    `複選：${allowMultiselect ? '是' : '否'}`,
+                ].join('\n'),
+                true,
+            );
+            return;
+        }
+
+        if (chatInteraction.commandName === 'image') {
+            const prompt = chatInteraction.options.getString('prompt', true).trim();
+            if (!prompt) {
+                await safeReply(chatInteraction, '請提供圖片描述。', true);
+                return;
+            }
+
+            await chatInteraction.deferReply({ ephemeral: false });
+            const image = await generateImageFromPrompt(prompt);
+            const replyText = await buildImageReplyText(prompt);
+            const sent = await chatInteraction.editReply({
+                content: replyText,
+                files: [
+                    {
+                        attachment: image.bytes,
+                        name: `generated-${Date.now()}.png`,
+                    },
+                ],
+            });
+            const url = sent.attachments.first()?.url;
+            await rememberChannelEvent(
+                chatInteraction.channelId,
+                chatInteraction.user.id,
+                `【圖片生成】使用者請求生成圖片。Prompt: ${prompt}${url ? `\n圖片URL: ${url}` : ''}`,
+                'assistant',
+            );
+            return;
+        }
+
         // 處理 /link 指令
         if (chatInteraction.commandName === 'link') {
             const studentId = chatInteraction.options.getString('student_id', true);
             const name = chatInteraction.options.getString('name', true);
             const user = await linkStudent(chatInteraction.user.id, name, studentId);
+            const roleAssignResult = await autoAssignRoleAfterLink(chatInteraction);
 
             try {
                 const sourceChannelName = (
@@ -1372,7 +2538,12 @@ client.on('interactionCreate', async (interaction) => {
 
             await safeReply(
                 chatInteraction,
-                `✅ 綁定成功！\n姓名：${user.display_name ?? name}\n學號：${user.student_id ?? studentId}`,
+                [
+                    '✅ 綁定成功！',
+                    `姓名：${user.display_name ?? name}`,
+                    `學號：${user.student_id ?? studentId}`,
+                    ...(roleAssignResult.message ? [roleAssignResult.message] : []),
+                ].join('\n'),
                 true,
             );
             return;
@@ -1415,7 +2586,12 @@ client.on('interactionCreate', async (interaction) => {
                 .reverse()
                 .map((question) => {
                     const topic = getQuestionTopic(question.metadata, question.category);
-                    return `🆔 ${question.id} [${topic}]\n${truncateContent(question.content)}`;
+                    const questionTypeLabel = question.question_type === 'short_answer'
+                        ? '簡答題'
+                        : question.question_type === 'survey'
+                            ? '問卷題'
+                            : '選擇題';
+                    return `🆔 ${question.id} [${topic}] [${questionTypeLabel}]\n${truncateContent(question.content)}`;
                 })
                 .join('\n\n');
 
@@ -1447,10 +2623,20 @@ client.on('interactionCreate', async (interaction) => {
             if (!(await requireTeacher(chatInteraction))) return;
 
             const content = chatInteraction.options.getString('content', true);
-            const question = await addMultipleChoiceQuestion(
+            const optionA = chatInteraction.options.getString('option_a', true);
+            const optionB = chatInteraction.options.getString('option_b', true);
+            const optionC = chatInteraction.options.getString('option_c', true);
+            const optionD = chatInteraction.options.getString('option_d', true);
+            const correct = chatInteraction.options.getString('correct', true).toUpperCase() as 'A' | 'B' | 'C' | 'D';
+            const explanation = chatInteraction.options.getString('explanation') ?? '';
+
+            const question = await createMultipleChoiceQuestion({
                 content,
-                getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
-            );
+                category: getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
+                options: [optionA, optionB, optionC, optionD],
+                correctAnswer: correct,
+                explanation,
+            });
 
             await safeReply(
                 chatInteraction,
@@ -1474,6 +2660,25 @@ client.on('interactionCreate', async (interaction) => {
             await safeReply(
                 chatInteraction,
                 `✅ 短答題新增成功！\nID：${question.id}\n題目：${question.content ?? content}`,
+                true,
+            );
+            return;
+        }
+
+        if (chatInteraction.commandName === 'add_survey') {
+            if (!(await requireTeacher(chatInteraction))) return;
+
+            const content = chatInteraction.options.getString('content', true);
+            const allowRepeatAnswer = chatInteraction.options.getBoolean('allow_repeat_answer') ?? false;
+            const question = await createSurveyQuestion({
+                content,
+                category: getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
+                allowRepeatAnswer,
+            });
+
+            await safeReply(
+                chatInteraction,
+                `✅ 問卷題新增成功！\nID：${question.id}\n題目：${question.content ?? content}\n重複作答：${allowRepeatAnswer ? '允許' : '不允許'}`,
                 true,
             );
             return;
@@ -1550,7 +2755,7 @@ client.on('interactionCreate', async (interaction) => {
                     embeds: [embed],
                     components: [row],
                 });
-            } else if (question.question_type === 'short_answer') {
+            } else if (question.question_type === 'short_answer' || question.question_type === 'survey') {
                 const embed = new EmbedBuilder()
                     .setColor(0x16a34a)
                     .setTitle(`第 ${question.id} 題`)
@@ -1562,7 +2767,7 @@ client.on('interactionCreate', async (interaction) => {
                 const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
                         .setCustomId(buildShortAnswerButtonCustomId(question.id, openedAtMs, durationSeconds))
-                        .setLabel('提交短答')
+                        .setLabel(question.question_type === 'survey' ? '提交問卷' : '提交短答')
                         .setStyle(ButtonStyle.Success),
                 );
 
@@ -1571,7 +2776,7 @@ client.on('interactionCreate', async (interaction) => {
                     components: [row],
                 });
             } else {
-                await safeReply(chatInteraction, '目前 /open 只支援選擇題與短答題', true);
+                await safeReply(chatInteraction, '目前 /open 只支援選擇題、短答題與問卷題', true);
                 return;
             }
 
@@ -1633,7 +2838,9 @@ client.on('interactionCreate', async (interaction) => {
             await clearRevisionTarget(sessionId);
             await clearDraftsByUser(chatInteraction.user.id);
             await clearBatchDraftsByUser(chatInteraction.user.id);
-            await safeReply(chatInteraction, '✅ 已清除你在目前頻道的 Agent 記憶與未確認題目草稿。', true);
+            pendingShortAnswerDrafts.delete(buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId));
+            pendingPollDrafts.delete(buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId));
+            await safeReply(chatInteraction, '✅ 已清除目前頻道的共享 Agent 記憶，以及你個人的未確認題目草稿。', true);
             return;
         }
 
@@ -1642,23 +2849,12 @@ client.on('interactionCreate', async (interaction) => {
 
             const prompt = chatInteraction.options.getString('prompt', true).trim();
             const count = chatInteraction.options.getInteger('count', true);
+            const categoryOverride = getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId);
 
             await chatInteraction.deferReply({ ephemeral: true });
             const batchDraft = await generateQuestionBatchDraft(chatInteraction.user.id, prompt, count);
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`approve_batch:${batchDraft.batchId}`)
-                    .setLabel('全部建立')
-                    .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                    .setCustomId(`discard_batch:${batchDraft.batchId}`)
-                    .setLabel('全部作廢')
-                    .setStyle(ButtonStyle.Danger),
-            );
-
             await chatInteraction.followUp({
-                content: getBatchPreviewText(batchDraft.questions),
-                components: [row],
+                ...buildBatchDraftMessage(batchDraft, categoryOverride),
                 ephemeral: true,
             });
             return;
@@ -1672,18 +2868,169 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
+            const sessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
+            const shortDraftSessionKey = buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId);
+            const pendingShortDraft = pendingShortAnswerDrafts.get(shortDraftSessionKey);
+            const pendingPollDraft = pendingPollDrafts.get(shortDraftSessionKey);
+            const effectivePrompt = pendingShortDraft && isShortDraftRevisionPrompt(prompt)
+                ? [
+                    '你正在修改同一份簡答題草稿，請直接輸出「更新後草稿」，不要要求老師重貼原題。',
+                    `目前草稿分類：${pendingShortDraft.category}`,
+                    `目前草稿題目：${pendingShortDraft.content}`,
+                    `目前草稿 rubric：${pendingShortDraft.rubric}`,
+                    `老師本次修改要求：${prompt}`,
+                ].join('\n')
+                : pendingPollDraft && isPollDraftRevisionPrompt(prompt)
+                    ? [
+                        '你正在修改同一份投票草稿，請直接輸出「更新後投票草稿」。',
+                        `目前投票問題：${pendingPollDraft.question}`,
+                        `目前投票選項：${pendingPollDraft.options.join(' | ')}`,
+                        `目前時長（小時）：${pendingPollDraft.durationHours}`,
+                        `目前允許複選：${pendingPollDraft.allowMultiselect ? '是' : '否'}`,
+                        `老師本次修改要求：${prompt}`,
+                    ].join('\n')
+                    : prompt;
+
             await chatInteraction.deferReply({ ephemeral: true });
             const result = await askAgent({
                 userId: chatInteraction.user.id,
-                question: prompt,
-                sessionId: buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId),
+                question: effectivePrompt,
+                sessionId,
                 isTeacher: await isTeacher(chatInteraction),
                 channelId: chatInteraction.guildId ?? chatInteraction.channelId,
             });
 
+            if (result.shortAnswerDraftPreview) {
+                if (!hasValidShortAnswerDraftPreview(result.shortAnswerDraftPreview)) {
+                    await safeReply(chatInteraction, '❌ 簡答題草稿格式不完整，這次不會建立。請重新描述需求再試一次。', true);
+                    return;
+                }
+
+                const autoCreateDraft = (process.env.ASK_AUTO_CREATE_ON_DRAFT ?? 'false').toLowerCase() === 'true';
+                if (autoCreateDraft) {
+                    const question = await createShortAnswerQuestion({
+                        content: result.shortAnswerDraftPreview.content,
+                        rubric: result.shortAnswerDraftPreview.rubric,
+                        category: getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
+                    });
+
+                    await safeReply(
+                        chatInteraction,
+                        [
+                            '✅ 簡答題已建立',
+                            `ID：${question.id}`,
+                            `題目：${question.content ?? '（無題目內容）'}`,
+                            `可用指令：/open id:${question.id}`,
+                        ].join('\n'),
+                        true,
+                    );
+                    return;
+                }
+
+                await safeReply(
+                    chatInteraction,
+                    [
+                        '已產生簡答題草稿，請先確認老師意見後再建立：',
+                        `分類：${getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId)}`,
+                        `題目：${result.shortAnswerDraftPreview.content}`,
+                        `評分規準（草稿）：${result.shortAnswerDraftPreview.rubric}`,
+                        '請確認 rubric 是否要修改；若要改，請再用 /ask 補充你要的評分重點。',
+                    ].join('\n'),
+                    true,
+                );
+                const sessionKey = buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId);
+                pendingShortAnswerDrafts.set(sessionKey, {
+                    category: result.shortAnswerDraftPreview.category,
+                    content: result.shortAnswerDraftPreview.content,
+                    rubric: result.shortAnswerDraftPreview.rubric,
+                });
+                const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`approve_short_draft:${chatInteraction.user.id}`)
+                        .setLabel('同意建立')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId(`revise_short_draft:${chatInteraction.user.id}`)
+                        .setLabel('我要修改')
+                        .setStyle(ButtonStyle.Secondary),
+                );
+                await chatInteraction.followUp({
+                    content: '請選擇下一步：',
+                    components: [row],
+                    flags: MessageFlags.Ephemeral,
+                });
+                return;
+            }
+
+            if (result.pollDraftPreview) {
+                const poll = result.pollDraftPreview;
+                if (poll.question.trim().length === 0 || poll.options.length < 2) {
+                    await safeReply(chatInteraction, '❌ 投票草稿格式不完整，請重新描述需求再試一次。', true);
+                    return;
+                }
+
+                pendingPollDrafts.set(shortDraftSessionKey, {
+                    question: poll.question,
+                    options: poll.options,
+                    durationHours: poll.durationHours,
+                    allowMultiselect: poll.allowMultiselect,
+                });
+
+                const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`approve_poll_draft:${chatInteraction.user.id}`)
+                        .setLabel('同意建立')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId(`revise_poll_draft:${chatInteraction.user.id}`)
+                        .setLabel('我要修改')
+                        .setStyle(ButtonStyle.Secondary),
+                );
+
+                await safeReply(
+                    chatInteraction,
+                    [
+                        '已產生投票草稿，請先確認後再建立：',
+                        `問題：${poll.question}`,
+                        `選項：${poll.options.join('｜')}`,
+                        `時長：${poll.durationHours} 小時`,
+                        `複選：${poll.allowMultiselect ? '是' : '否'}`,
+                        '若要改內容，按「我要修改」後再用 /ask 補充。',
+                    ].join('\n'),
+                    true,
+                );
+                await chatInteraction.followUp({
+                    content: '請選擇下一步：',
+                    components: [row],
+                    flags: MessageFlags.Ephemeral,
+                });
+                return;
+            }
+
             if (result.draftPreview) {
                 if (!hasValidDraftPreview(result.draftPreview)) {
                     await safeReply(chatInteraction, '❌ 題目草稿格式不完整，這次不會建立。請重新描述需求再試一次。', true);
+                    return;
+                }
+
+                const autoCreateDraft = (process.env.ASK_AUTO_CREATE_ON_DRAFT ?? 'false').toLowerCase() === 'true';
+                if (autoCreateDraft) {
+                    const question = await approveQuestionDraft(
+                        result.draftPreview.draftId,
+                        chatInteraction.user.id,
+                        getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
+                    );
+                    await clearRevisionTarget(buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId));
+                    await safeReply(
+                        chatInteraction,
+                        [
+                            '✅ 題目已建立',
+                            `ID：${question.id}`,
+                            `題目：${question.content ?? '（無題目內容）'}`,
+                            `可用指令：/open id:${question.id}`,
+                        ].join('\n'),
+                        true,
+                    );
                     return;
                 }
 
@@ -1699,7 +3046,10 @@ client.on('interactionCreate', async (interaction) => {
                 );
 
                 await chatInteraction.followUp({
-                    content: `${result.answer}\n\n${getDraftPreviewText(result.draftPreview)}`,
+                    content: `${result.answer}\n\n${getDraftPreviewText(
+                        result.draftPreview,
+                        getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
+                    )}\n\n請先確認後再建立題目。`,
                     components: [row],
                     ephemeral: true,
                 });
@@ -1710,6 +3060,8 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
     } catch (error) {
+        commandAuditStatus = 'error';
+        commandAuditErrorText = formatError(error);
         console.error('❌ 指令處理失敗：', formatError(error));
 
         const failureMessage = chatInteraction.commandName === 'link'
@@ -1721,6 +3073,160 @@ client.on('interactionCreate', async (interaction) => {
                 : '❌ 指令執行失敗，請稍後再試。';
 
         await safeReply(chatInteraction, failureMessage, true);
+    } finally {
+        try {
+            await notifyCommandUsage({
+                interaction: chatInteraction,
+                status: commandAuditStatus,
+                errorText: commandAuditErrorText,
+            });
+        } catch (error) {
+            console.warn('⚠️ 指令紀錄發送失敗：', formatError(error));
+        }
+    }
+});
+
+client.on('messageCreate', async (message) => {
+    if (!client.user) return;
+    if (message.author.bot) return;
+    if (!message.guild) return;
+    const botUserId = client.user.id;
+
+    if (message.attachments.size > 0) {
+        const imageAttachments = [...message.attachments.values()].filter((item) => item.contentType?.startsWith('image/'));
+        if (imageAttachments.length > 0) {
+            const attachmentLines = imageAttachments
+                .slice(0, 4)
+                .map((item, index) => `${index + 1}. ${item.name ?? 'unnamed'} (${item.url})`);
+            await rememberChannelEvent(
+                message.channelId,
+                message.author.id,
+                [
+                    `【圖片上傳】${message.author.username} 在頻道上傳了圖片。`,
+                    ...(message.content.trim().length > 0 ? [`訊息文字: ${message.content.trim()}`] : []),
+                    '圖片清單:',
+                    ...attachmentLines,
+                ].join('\n'),
+                'user',
+            );
+        }
+    }
+
+    const isMentioned = message.mentions.users.has(botUserId);
+    const isReplyToBot = Boolean(message.reference?.messageId)
+        && message.reference?.type === 0
+        && (await (async () => {
+            try {
+                const referenced = await message.fetchReference();
+                return referenced.author.id === botUserId;
+            } catch {
+                return false;
+            }
+        })());
+
+    if (!isMentioned && !isReplyToBot) return;
+
+    const mentionPattern = new RegExp(`<@!?${botUserId}>`, 'g');
+    const prompt = message.content.replace(mentionPattern, '').trim();
+    if (!prompt) {
+        await message.reply('請輸入要詢問的內容。');
+        return;
+    }
+
+    if (looksLikeImagePrompt(prompt)) {
+        try {
+            const image = await generateImageFromPrompt(prompt);
+            const replyText = await buildImageReplyText(prompt);
+            const sent = await message.reply({
+                content: replyText,
+                files: [
+                    {
+                        attachment: image.bytes,
+                        name: `generated-${Date.now()}.png`,
+                    },
+                ],
+            });
+            const url = sent.attachments.first()?.url;
+            await rememberChannelEvent(
+                message.channelId,
+                message.author.id,
+                `【圖片生成】使用者透過視覺描述觸發生成圖片。Prompt: ${prompt}${url ? `\n圖片URL: ${url}` : ''}`,
+                'assistant',
+            );
+        } catch (error) {
+            console.error('❌ @機器人圖片生成失敗：', formatError(error));
+            await message.reply('❌ 目前無法生成圖片，請稍後再試。');
+        }
+        return;
+    }
+
+    let detectedIntent: MentionIntentResult = { intent: 'chat', prompt };
+    try {
+        detectedIntent = await detectMentionIntent(prompt);
+    } catch (error) {
+        console.warn('⚠️ @機器人意圖判斷失敗，改用關鍵字備援：', formatError(error));
+        const fallbackMatch = /^(畫圖|畫|生成圖片|產生圖片|image)\s*(?:[:：]\s*|\s+)(.+)$/i.exec(prompt);
+        if (fallbackMatch) {
+            detectedIntent = { intent: 'image', prompt: (fallbackMatch[2] ?? '').trim() };
+        }
+    }
+
+    if (detectedIntent.intent === 'image') {
+        const imagePrompt = detectedIntent.prompt.trim();
+        if (!imagePrompt) {
+            await message.reply('請在 `畫圖:` 後輸入描述，例如：`@VTA 畫圖: 一隻戴眼鏡的柴犬`');
+            return;
+        }
+        try {
+            const image = await generateImageFromPrompt(imagePrompt);
+            const replyText = await buildImageReplyText(imagePrompt);
+            const sent = await message.reply({
+                content: replyText,
+                files: [
+                    {
+                        attachment: image.bytes,
+                        name: `generated-${Date.now()}.png`,
+                    },
+                ],
+            });
+            const url = sent.attachments.first()?.url;
+            await rememberChannelEvent(
+                message.channelId,
+                message.author.id,
+                `【圖片生成】使用者透過@機器人請求生成圖片。Prompt: ${imagePrompt}${url ? `\n圖片URL: ${url}` : ''}`,
+                'assistant',
+            );
+        } catch (error) {
+            console.error('❌ @機器人圖片生成失敗：', formatError(error));
+            await message.reply('❌ 目前無法生成圖片，請稍後再試。');
+        }
+        return;
+    }
+
+    try {
+        const sessionId = buildAgentSessionId(message.author.id, message.channelId);
+        const result = await askAgent({
+            userId: message.author.id,
+            question: prompt,
+            sessionId,
+            isTeacher: false,
+            channelId: message.guildId ?? message.channelId,
+            chatMode: true,
+        });
+
+        let responseText = result.answer;
+        if (result.draftPreview) {
+            responseText += '\n\n（已產生題目草稿，請使用 `/ask` 觸發按鈕確認建立。）';
+        } else if (result.shortAnswerDraftPreview) {
+            responseText += '\n\n（已產生簡答題草稿，請使用 `/ask` 進行確認建立。）';
+        } else if (result.pollDraftPreview) {
+            responseText += '\n\n（已產生投票草稿，請使用 `/ask` 進行確認建立。）';
+        }
+
+        await message.reply(responseText);
+    } catch (error) {
+        console.error('❌ @機器人對話失敗：', formatError(error));
+        await message.reply('❌ 目前無法回覆，請稍後再試。');
     }
 });
 

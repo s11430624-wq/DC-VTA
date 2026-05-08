@@ -1,4 +1,4 @@
-# Teacher Dashboard
+﻿# Teacher Dashboard
 
 本目錄是 monorepo 內的 dashboard app。
 
@@ -32,7 +32,7 @@ VITE_SUPABASE_ANON_KEY=
 VITE_AI_GRADING_API_URL=/api/ai-grade
 VITE_LIFF_ID=
 GEMINI_API_KEY=
-GEMINI_MODEL=gemma-3-27b-it
+GEMINI_MODEL=gemini-3.1-flash-lite-preview
 ```
 
 規則：
@@ -65,7 +65,7 @@ Serverless env:
 
 ```env
 GEMINI_API_KEY=...
-GEMINI_MODEL=gemma-3-27b-it
+GEMINI_MODEL=gemini-3.1-flash-lite-preview
 ```
 
 如果你已經只有：
@@ -181,3 +181,4 @@ npm run dashboard:build
 ```powershell
 npm run build
 ```
+

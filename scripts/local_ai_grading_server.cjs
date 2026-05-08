@@ -3,7 +3,7 @@ const http = require('http');
 const host = process.env.LOCAL_AI_GRADING_HOST || '127.0.0.1';
 const port = Number(process.env.LOCAL_AI_GRADING_PORT || 8787);
 const geminiApiKey = process.env.GEMINI_API_KEY;
-const geminiModel = process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemma-3-27b-it';
+const geminiModel = process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview';
 
 function stripCodeFences(rawText) {
     const trimmed = String(rawText || '').trim();

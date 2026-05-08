@@ -25,6 +25,12 @@ type CreateShortAnswerQuestionInput = {
     rubric: string;
 };
 
+type CreateSurveyQuestionInput = {
+    content: string;
+    category?: string;
+    allowRepeatAnswer?: boolean;
+};
+
 const isMissingRubricColumn = (error: { message?: string; code?: string }) => {
     const message = error.message?.toLowerCase() ?? '';
     return error.code === 'PGRST204' || message.includes('rubric');
@@ -56,6 +62,23 @@ export async function getQuestionById(id: number): Promise<QuestionRecord | null
     }
 
     return data as QuestionRecord | null;
+}
+
+export async function getQuestionsByIds(ids: number[]): Promise<QuestionRecord[]> {
+    if (ids.length === 0) {
+        return [];
+    }
+
+    const { data, error } = await supabase
+        .from('question_bank')
+        .select('*')
+        .in('id', ids);
+
+    if (error) {
+        throw new Error(`批次查詢題目失敗：${error.message}`);
+    }
+
+    return (data ?? []) as QuestionRecord[];
 }
 
 export async function addMultipleChoiceQuestion(content: string, category?: string): Promise<QuestionRecord> {
@@ -151,6 +174,49 @@ export async function createShortAnswerQuestion(input: CreateShortAnswerQuestion
         }
 
         throw new Error(`新增短答題失敗：${result.error.message}`);
+    }
+
+    return result.data as QuestionRecord;
+}
+
+export async function createSurveyQuestion(input: CreateSurveyQuestionInput): Promise<QuestionRecord> {
+    const payload = {
+        content: input.content,
+        category: input.category ?? '一般',
+        question_type: 'survey',
+        explanation: null,
+        metadata: {
+            allow_repeat_answer: Boolean(input.allowRepeatAnswer),
+        },
+        rubric: null,
+    };
+
+    const insertWithoutRubric = async () => {
+        const { rubric, ...payloadWithoutRubric } = payload;
+        return supabase
+            .from('question_bank')
+            .insert(payloadWithoutRubric)
+            .select('*')
+            .single();
+    };
+
+    const result = await supabase
+        .from('question_bank')
+        .insert(payload)
+        .select('*')
+        .single();
+
+    if (result.error) {
+        if (isMissingRubricColumn(result.error)) {
+            const fallbackResult = await insertWithoutRubric();
+            if (fallbackResult.error) {
+                throw new Error(`新增問卷題失敗：${fallbackResult.error.message}`);
+            }
+
+            return fallbackResult.data as QuestionRecord;
+        }
+
+        throw new Error(`新增問卷題失敗：${result.error.message}`);
     }
 
     return result.data as QuestionRecord;

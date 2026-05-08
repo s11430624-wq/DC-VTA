@@ -207,6 +207,7 @@ defineExpose({ fetchQuestions })
                 <span class="text-sm text-gray-500 font-mono">#{{ q.id }}</span>
                 <span v-if="q.category" class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded">{{ q.category }}</span>
                 <span v-if="q.question_type === 'multiple_choice'" class="px-2 py-1 text-xs bg-indigo-100 text-indigo-700 rounded font-medium">選擇題</span>
+                <span v-else-if="q.question_type === 'survey'" class="px-2 py-1 text-xs bg-emerald-100 text-emerald-700 rounded font-medium">問卷題</span>
                 <span v-else class="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded font-medium">簡答題</span>
               </div>
               <p class="text-gray-800 mb-2">{{ q.content || '（無題目描述，僅提供選項）' }}</p>

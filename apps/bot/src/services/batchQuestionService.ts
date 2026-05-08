@@ -1,23 +1,9 @@
 import { randomUUID } from 'crypto';
+import { generateModelText } from './llmService';
 import { createMultipleChoiceQuestion, QuestionRecord } from './questionService';
 import { supabase } from './supabase';
 
-const geminiApiKey = process.env.GEMINI_API_KEY;
 const questionModel = process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview';
-
-if (!geminiApiKey) {
-    throw new Error('缺少必要環境變數：GEMINI_API_KEY');
-}
-
-type GeminiResponse = {
-    candidates?: Array<{
-        content?: {
-            parts?: Array<{
-                text?: string;
-            }>;
-        };
-    }>;
-};
 
 export type BatchQuestionPayload = {
     category: string;
@@ -27,11 +13,20 @@ export type BatchQuestionPayload = {
     explanation: string;
 };
 
+export type BatchDraftQuestionStatus = 'active' | 'created' | 'deleted';
+
+export type BatchDraftQuestionItem = {
+    itemId: string;
+    status: BatchDraftQuestionStatus;
+    payload: BatchQuestionPayload;
+    createdQuestionId?: number | null;
+};
+
 export type QuestionBatchDraftRecord = {
     batchId: string;
     userId: string;
     instructions: string;
-    questions: BatchQuestionPayload[];
+    questions: BatchDraftQuestionItem[];
     createdAt: string;
 };
 
@@ -39,7 +34,7 @@ type BatchDraftRow = {
     batch_id: string;
     user_id: string;
     instructions: string;
-    questions: BatchQuestionPayload[];
+    questions: Array<BatchQuestionPayload | BatchDraftQuestionItem>;
     created_at?: string;
 };
 
@@ -132,47 +127,146 @@ function parseBatchQuestions(rawText: string, expectedCount: number): BatchQuest
     return parsed.questions.map((question) => validateQuestionPayload(question));
 }
 
+function createBatchDraftQuestionItem(payload: BatchQuestionPayload): BatchDraftQuestionItem {
+    return {
+        itemId: randomUUID(),
+        status: 'active',
+        payload,
+        createdQuestionId: null,
+    };
+}
+
+function isBatchDraftQuestionItem(question: BatchQuestionPayload | BatchDraftQuestionItem): question is BatchDraftQuestionItem {
+    return typeof question === 'object'
+        && question !== null
+        && 'itemId' in question
+        && 'payload' in question
+        && 'status' in question;
+}
+
+function normalizeBatchDraftQuestions(
+    questions: Array<BatchQuestionPayload | BatchDraftQuestionItem>,
+): BatchDraftQuestionItem[] {
+    return questions.map((question) => {
+        if (!isBatchDraftQuestionItem(question)) {
+            return createBatchDraftQuestionItem(validateQuestionPayload(question));
+        }
+
+        return {
+            itemId: typeof question.itemId === 'string' && question.itemId.trim().length > 0 ? question.itemId : randomUUID(),
+            status: question.status === 'created' || question.status === 'deleted' ? question.status : 'active',
+            payload: validateQuestionPayload(question.payload),
+            createdQuestionId: typeof question.createdQuestionId === 'number' ? question.createdQuestionId : null,
+        };
+    });
+}
+
+function getPendingDraftItems(questions: BatchDraftQuestionItem[]): BatchDraftQuestionItem[] {
+    return questions.filter((question) => question.status === 'active');
+}
+
+function getVisibleDraftItems(questions: BatchDraftQuestionItem[]): BatchDraftQuestionItem[] {
+    return questions.filter((question) => question.status !== 'deleted');
+}
+
+function markQuestionCreated(
+    questions: BatchDraftQuestionItem[],
+    itemId: string,
+    createdQuestionId: number,
+): BatchDraftQuestionItem[] {
+    return questions.map((question) => (
+        question.itemId === itemId
+            ? {
+                ...question,
+                status: 'created',
+                createdQuestionId,
+            }
+            : question
+    ));
+}
+
+function markQuestionDeleted(questions: BatchDraftQuestionItem[], itemId: string): BatchDraftQuestionItem[] {
+    return questions.map((question) => (
+        question.itemId === itemId
+            ? {
+                ...question,
+                status: 'deleted',
+            }
+            : question
+    ));
+}
+
+function replaceDraftQuestion(
+    questions: BatchDraftQuestionItem[],
+    itemId: string,
+    payload: BatchQuestionPayload,
+): BatchDraftQuestionItem[] {
+    return questions.map((question) => (
+        question.itemId === itemId
+            ? {
+                ...question,
+                status: 'active',
+                createdQuestionId: null,
+                payload,
+            }
+            : question
+    ));
+}
+
 async function generateBatchQuestions(prompt: string, count: number): Promise<BatchQuestionPayload[]> {
-    const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${questionModel}:generateContent?key=${geminiApiKey}`,
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                contents: [
-                    {
-                        role: 'user',
-                        parts: [
-                            {
-                                text: `${BATCH_GENERATION_PROMPT}\n\n老師需求：${prompt}\n\n題數：${count}`,
-                            },
-                        ],
-                    },
-                ],
-                generationConfig: {
-                    temperature: 0.7,
-                    responseMimeType: 'application/json',
-                },
-            }),
-        },
-    );
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Gemini 批次出題失敗：${response.status} ${errorText}`);
-    }
-
-    const data = (await response.json()) as GeminiResponse;
-    const rawText = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('').trim();
+    const rawText = await generateModelText({
+        model: questionModel,
+        prompt: `${BATCH_GENERATION_PROMPT}\n\n老師需求：${prompt}\n\n題數：${count}`,
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+    });
 
     if (!rawText) {
-        throw new Error('Gemini 沒有回傳批次題目內容。');
+        throw new Error('LLM 沒有回傳批次題目內容。');
     }
 
     return parseBatchQuestions(rawText, count);
 }
+
+async function regenerateSingleBatchQuestion(
+    instructions: string,
+    currentQuestion: BatchQuestionPayload,
+    revisionPrompt: string,
+): Promise<BatchQuestionPayload> {
+    const rawText = await generateModelText({
+        model: questionModel,
+        prompt: [
+            BATCH_GENERATION_PROMPT,
+            '',
+            `原始老師需求：${instructions}`,
+            '請只重寫 1 題四選一單選題。',
+            '你必須保留同主題，但依照老師補充要求調整內容。',
+            '新的題目不能只是原題的輕微改寫，請明顯反映修改要求。',
+            `目前題目：${JSON.stringify(currentQuestion)}`,
+            `老師補充修改要求：${revisionPrompt}`,
+            '只輸出 JSON，不要輸出 Markdown。',
+            'JSON 結構必須是 {"questions":[{"category":"...","content":"...","options":["...","...","...","..."],"correct_answer":"A","explanation":"..."}]}。',
+        ].join('\n'),
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+    });
+
+    if (!rawText) {
+        throw new Error('LLM 沒有回傳重生題目內容。');
+    }
+
+    return parseBatchQuestions(rawText, 1)[0]!;
+}
+
+export const __batchQuestionServiceForTests = {
+    parseBatchQuestions,
+    normalizeBatchDraftQuestions,
+    getPendingDraftItems,
+    getVisibleDraftItems,
+    markQuestionCreated,
+    markQuestionDeleted,
+    replaceDraftQuestion,
+};
 
 async function saveBatchDraft(record: QuestionBatchDraftRecord): Promise<void> {
     batchDraftStore.set(record.batchId, record);
@@ -238,7 +332,7 @@ export async function getBatchDraftById(batchId: string): Promise<QuestionBatchD
         batchId: row.batch_id,
         userId: row.user_id,
         instructions: row.instructions,
-        questions: row.questions,
+        questions: normalizeBatchDraftQuestions(row.questions),
         createdAt: row.created_at ?? new Date().toISOString(),
     };
 
@@ -278,7 +372,7 @@ export async function generateQuestionBatchDraft(
         batchId: randomUUID(),
         userId,
         instructions: prompt,
-        questions,
+        questions: normalizeBatchDraftQuestions(questions),
         createdAt: new Date().toISOString(),
     };
 
@@ -297,19 +391,29 @@ export async function approveQuestionBatchDraft(
         throw new Error('這份批次草稿已建立、已失效或已被清除。請重新生成。');
     }
 
-    const createdQuestions: QuestionRecord[] = [];
-    for (const question of batchDraft.questions) {
-        const createdQuestion = await createMultipleChoiceQuestion({
-            content: question.content,
-            category: categoryOverride ?? question.category,
-            options: question.options,
-            correctAnswer: question.correct_answer,
-            explanation: question.explanation,
-        });
-        createdQuestions.push(createdQuestion);
+    const pendingQuestions = getPendingDraftItems(batchDraft.questions);
+    if (pendingQuestions.length === 0) {
+        throw new Error('這份批次草稿沒有可建立的題目了。');
     }
 
-    await deleteBatchDraft(batchId);
+    const createdQuestions: QuestionRecord[] = [];
+    let nextQuestions = [...batchDraft.questions];
+    for (const question of pendingQuestions) {
+        const createdQuestion = await createMultipleChoiceQuestion({
+            content: question.payload.content,
+            category: categoryOverride ?? question.payload.category,
+            options: question.payload.options,
+            correctAnswer: question.payload.correct_answer,
+            explanation: question.payload.explanation,
+        });
+        createdQuestions.push(createdQuestion);
+        nextQuestions = markQuestionCreated(nextQuestions, question.itemId, createdQuestion.id);
+    }
+
+    await saveBatchDraft({
+        ...batchDraft,
+        questions: nextQuestions,
+    });
     return createdQuestions;
 }
 
@@ -321,4 +425,106 @@ export async function discardQuestionBatchDraft(batchId: string, userId: string)
     }
 
     await deleteBatchDraft(batchId);
+}
+
+export async function createSingleQuestionFromBatchDraft(
+    batchId: string,
+    userId: string,
+    itemId: string,
+    categoryOverride?: string,
+): Promise<{ question: QuestionRecord; draft: QuestionBatchDraftRecord; item: BatchDraftQuestionItem }> {
+    const batchDraft = await getBatchDraftById(batchId);
+
+    if (!batchDraft || batchDraft.userId !== userId) {
+        throw new Error('這份批次草稿已失效、已建立或已被清除。請重新生成。');
+    }
+
+    const targetItem = batchDraft.questions.find((question) => question.itemId === itemId);
+    if (!targetItem || targetItem.status === 'deleted') {
+        throw new Error('找不到這一題，或這題已被刪除。');
+    }
+
+    if (targetItem.status === 'created') {
+        throw new Error('這一題已經建立過了。');
+    }
+
+    const question = await createMultipleChoiceQuestion({
+        content: targetItem.payload.content,
+        category: categoryOverride ?? targetItem.payload.category,
+        options: targetItem.payload.options,
+        correctAnswer: targetItem.payload.correct_answer,
+        explanation: targetItem.payload.explanation,
+    });
+
+    const nextDraft = {
+        ...batchDraft,
+        questions: markQuestionCreated(batchDraft.questions, itemId, question.id),
+    };
+    await saveBatchDraft(nextDraft);
+
+    return {
+        question,
+        draft: nextDraft,
+        item: nextDraft.questions.find((draftQuestion) => draftQuestion.itemId === itemId)!,
+    };
+}
+
+export async function deleteSingleQuestionFromBatchDraft(
+    batchId: string,
+    userId: string,
+    itemId: string,
+): Promise<QuestionBatchDraftRecord> {
+    const batchDraft = await getBatchDraftById(batchId);
+
+    if (!batchDraft || batchDraft.userId !== userId) {
+        throw new Error('這份批次草稿已失效、已建立或已被清除。請重新生成。');
+    }
+
+    const targetItem = batchDraft.questions.find((question) => question.itemId === itemId);
+    if (!targetItem) {
+        throw new Error('找不到這一題。');
+    }
+
+    const nextDraft = {
+        ...batchDraft,
+        questions: markQuestionDeleted(batchDraft.questions, itemId),
+    };
+    await saveBatchDraft(nextDraft);
+    return nextDraft;
+}
+
+export async function reviseSingleQuestionFromBatchDraft(
+    batchId: string,
+    userId: string,
+    itemId: string,
+    revisionPrompt: string,
+): Promise<QuestionBatchDraftRecord> {
+    const batchDraft = await getBatchDraftById(batchId);
+
+    if (!batchDraft || batchDraft.userId !== userId) {
+        throw new Error('這份批次草稿已失效、已建立或已被清除。請重新生成。');
+    }
+
+    const targetItem = batchDraft.questions.find((question) => question.itemId === itemId);
+    if (!targetItem || targetItem.status === 'deleted') {
+        throw new Error('找不到這一題，或這題已被刪除。');
+    }
+
+    const trimmedPrompt = revisionPrompt.trim();
+    if (!trimmedPrompt) {
+        throw new Error('請輸入修改要求後再重生。');
+    }
+
+    const replacement = await regenerateSingleBatchQuestion(
+        batchDraft.instructions,
+        targetItem.payload,
+        trimmedPrompt,
+    );
+
+    const nextDraft = {
+        ...batchDraft,
+        questions: replaceDraftQuestion(batchDraft.questions, itemId, replacement),
+    };
+    await saveBatchDraft(nextDraft);
+    return nextDraft;
 }
