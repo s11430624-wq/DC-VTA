@@ -70,11 +70,10 @@ const ensureVertexCredentialsFromEnv = () => {
         return;
     }
 
-    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    const rawJson = process.env.GCP_SERVICE_ACCOUNT_JSON?.trim();
+    if (!rawJson && process.env.GOOGLE_APPLICATION_CREDENTIALS) {
         return;
     }
-
-    const rawJson = process.env.GCP_SERVICE_ACCOUNT_JSON?.trim();
     if (!rawJson) {
         return;
     }
