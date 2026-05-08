@@ -21,6 +21,7 @@
 } from 'discord.js';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 import { approveQuestionDraft, clearDraftsByUser, getDraftById } from './services/aiQuestionService';
@@ -3276,6 +3277,24 @@ client.on('messageCreate', async (message) => {
         console.error('❌ @機器人對話失敗：', formatError(error));
         await message.reply('❌ 目前無法回覆，請稍後再試。');
     }
+});
+
+const renderPort = Number(process.env.PORT || 3000);
+const healthServer = http.createServer((req, res) => {
+    const requestPath = req.url ?? '/';
+
+    if (requestPath === '/health') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('ok');
+        return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('dc-vta-bot is running');
+});
+
+healthServer.listen(renderPort, () => {
+    console.log(`🌐 Health server listening on port ${renderPort}`);
 });
 
 // 啟動機器人
