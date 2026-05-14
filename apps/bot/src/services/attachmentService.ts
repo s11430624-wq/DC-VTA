@@ -2,13 +2,24 @@ import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
 import { generateModelText, type GenerateModelPart } from './llmService';
 
-type PdfParseFn = (buffer: Buffer) => Promise<{ text?: string }>;
+type PdfParseModule = typeof import('pdf-parse');
 type MammothModule = typeof import('mammoth');
 type ResvgConstructor = typeof import('@resvg/resvg-js').Resvg;
 
-const loadPdfParse = (): PdfParseFn => require('pdf-parse') as PdfParseFn;
+const loadPdfParseModule = (): PdfParseModule => require('pdf-parse') as PdfParseModule;
 const loadMammoth = (): MammothModule => require('mammoth') as MammothModule;
 const loadResvg = (): ResvgConstructor => require('@resvg/resvg-js').Resvg as ResvgConstructor;
+
+const extractPdfTextFromBuffer = async (buffer: Buffer) => {
+    const { PDFParse } = loadPdfParseModule();
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    try {
+        const parsed = await parser.getText();
+        return normalizeWhitespace(parsed.text ?? '');
+    } finally {
+        await parser.destroy();
+    }
+};
 
 export type AttachmentInput = {
     name: string;
@@ -504,11 +515,9 @@ const extractDocument = async (attachment: AttachmentInput, buffer: Buffer): Pro
     }
 
     if (fileType === 'pdf') {
-        const pdfParse = loadPdfParse();
-        const parsed = await pdfParse(buffer);
         return {
             fileType,
-            rawText: normalizeWhitespace(parsed.text ?? ''),
+            rawText: await extractPdfTextFromBuffer(buffer),
             warnings: [],
         };
     }
@@ -745,6 +754,7 @@ export async function editAttachments(attachments: AttachmentInput[], instructio
 
 export const __attachmentServiceForTests = {
     chunkText,
+    extractPdfTextFromBuffer,
     getAttachmentType,
     isEditInstruction,
     formatAttachmentReadContext,
