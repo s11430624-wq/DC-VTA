@@ -17,6 +17,7 @@ type AskAgentInput = {
     channelId: string;
     chatMode?: boolean;
     liveChannelContext?: string;
+    attachmentContext?: string;
 };
 
 type DraftPreview = {
@@ -436,6 +437,8 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
         readMultilineEnv('AGENT_SYSTEM_PROMPT', DEFAULT_AGENT_SYSTEM_PROMPT),
         '',
         `頻道近期對話:\n${input.liveChannelContext?.trim() || '（無）'}`,
+        '',
+        `附件內容:\n${input.attachmentContext?.trim() || '（無）'}`,
         '',
         `歷史對話:\n${memoryText || '（無）'}`,
         '',

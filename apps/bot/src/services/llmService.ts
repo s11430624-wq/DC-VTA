@@ -1,8 +1,18 @@
 import { GoogleAuth } from 'google-auth-library';
 
+export type GenerateModelPart =
+    | { text: string }
+    | {
+        inlineData: {
+            mimeType: string;
+            data: string;
+        };
+    };
+
 type GenerateTextOptions = {
     model: string;
-    prompt: string;
+    prompt?: string;
+    parts?: GenerateModelPart[];
     temperature?: number;
     maxOutputTokens?: number;
     responseMimeType?: string;
@@ -68,9 +78,22 @@ const parseStreamedText = (raw: string) => {
     return texts.join('').trim();
 };
 
+const buildPartsPayload = (prompt?: string, parts?: GenerateModelPart[]) => {
+    if (parts && parts.length > 0) {
+        return parts;
+    }
+
+    if (prompt?.trim()) {
+        return [{ text: prompt }];
+    }
+
+    throw new Error('generateModelText 需要 prompt 或 parts');
+};
+
 async function callGeminiApi({
     model,
     prompt,
+    parts,
     temperature = 0.7,
     maxOutputTokens,
     responseMimeType,
@@ -86,7 +109,7 @@ async function callGeminiApi({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                contents: [{ role: 'user', parts: buildPartsPayload(prompt, parts) }],
                 generationConfig: {
                     temperature,
                     maxOutputTokens,
@@ -107,6 +130,7 @@ async function callGeminiApi({
 async function callVertexApi({
     model,
     prompt,
+    parts,
     temperature = 0.7,
     maxOutputTokens,
     responseMimeType,
@@ -133,7 +157,7 @@ async function callVertexApi({
             Authorization: `Bearer ${accessToken.token}`,
         },
         body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            contents: [{ role: 'user', parts: buildPartsPayload(prompt, parts) }],
             generationConfig: {
                 temperature,
                 maxOutputTokens,

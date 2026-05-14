@@ -29,6 +29,14 @@ import path from 'path';
 import { approveQuestionDraft, clearDraftsByUser, getDraftById } from './services/aiQuestionService';
 import { askAgent, buildAgentSessionId } from './services/agentService';
 import { clearAgentMessages } from './services/agentMemoryService';
+import {
+    editAttachments,
+    formatAttachmentReadContext,
+    formatAttachmentReadReplyHeader,
+    isEditInstruction,
+    processAttachmentsForReading,
+    type AttachmentInput,
+} from './services/attachmentService';
 import { appendChatMessage } from './services/chatMemoryService';
 import { clearRevisionTarget, setRevisionTarget } from './services/agentRevisionStateService';
 import {
@@ -241,6 +249,32 @@ const buildLiveChannelContext = async (message: Message): Promise<string> => {
     }
 };
 
+const toAttachmentInput = (attachment: { name?: string | null; url: string; contentType?: string | null; size?: number | null }): AttachmentInput | null => {
+    if (!attachment.name) {
+        return null;
+    }
+    const input: AttachmentInput = {
+        name: attachment.name,
+        url: attachment.url,
+    };
+    if (attachment.contentType !== undefined) {
+        input.contentType = attachment.contentType;
+    }
+    if (attachment.size != null) {
+        input.size = attachment.size;
+    }
+    return input;
+};
+
+const collectMessageAttachments = (message: Message) => [...message.attachments.values()]
+    .map((attachment) => toAttachmentInput(attachment))
+    .filter((attachment): attachment is AttachmentInput => attachment !== null);
+
+const collectCommandAttachments = (interaction: ChatInputCommandInteraction, optionNames: string[]) => optionNames
+    .map((name) => interaction.options.getAttachment(name))
+    .map((attachment) => (attachment ? toAttachmentInput(attachment) : null))
+    .filter((attachment): attachment is AttachmentInput => attachment !== null);
+
 type MentionIntentResult = {
     intent: 'image' | 'chat';
     prompt: string;
@@ -442,6 +476,56 @@ const commands = [
                 name: 'prompt',
                 description: 'research 任務的查詢主題',
                 type: ApplicationCommandOptionType.String,
+                required: false,
+            },
+            {
+                name: 'attachment_1',
+                description: '要讀取的附件 1',
+                type: ApplicationCommandOptionType.Attachment,
+                required: false,
+            },
+            {
+                name: 'attachment_2',
+                description: '要讀取的附件 2',
+                type: ApplicationCommandOptionType.Attachment,
+                required: false,
+            },
+            {
+                name: 'attachment_3',
+                description: '要讀取的附件 3',
+                type: ApplicationCommandOptionType.Attachment,
+                required: false,
+            },
+        ],
+    },
+    {
+        name: 'edit_doc',
+        description: '讀取文字文件並提供修訂清單與修正版',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
+        dm_permission: false,
+        options: [
+            {
+                name: 'instruction',
+                description: '修改要求，例如：改成比較正式的報告口吻',
+                type: ApplicationCommandOptionType.String,
+                required: true,
+            },
+            {
+                name: 'attachment_1',
+                description: '要編修的附件 1',
+                type: ApplicationCommandOptionType.Attachment,
+                required: false,
+            },
+            {
+                name: 'attachment_2',
+                description: '要編修的附件 2',
+                type: ApplicationCommandOptionType.Attachment,
+                required: false,
+            },
+            {
+                name: 'attachment_3',
+                description: '要編修的附件 3',
+                type: ApplicationCommandOptionType.Attachment,
                 required: false,
             },
         ],
@@ -2441,7 +2525,8 @@ client.on('interactionCreate', async (interaction) => {
             ];
             const teacherCommands = [
                 '`/model [name]` - 查看或切換 Bot 使用模型',
-                '`/agent action [prompt]` - 執行工作室任務（摘要/研究）',
+                '`/agent action [prompt] [attachment_1..3]` - 執行工作室任務（摘要/研究；research 會附上完整 .md 報告）',
+                '`/edit_doc instruction [attachment_1..3]` - 讀取文字文件並提供修訂清單與修正版',
                 '`/list` - 顯示最近 10 筆題庫',
                 '`/question id` - 查看題目詳情',
                 '`/add content option_a option_b option_c option_d correct [explanation]` - 老師新增選擇題',
@@ -2524,13 +2609,42 @@ client.on('interactionCreate', async (interaction) => {
             const action = chatInteraction.options.getString('action', true) as 'summarize_channel' | 'research';
             const prompt = chatInteraction.options.getString('prompt')?.trim();
             const channelSessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
+            const attachments = collectCommandAttachments(chatInteraction, ['attachment_1', 'attachment_2', 'attachment_3']);
+            const attachmentResults = attachments.length > 0 ? await processAttachmentsForReading(attachments) : [];
+            const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults) : '';
 
             await chatInteraction.deferReply({ ephemeral: true });
-            const output = await runStudioTask({
+            const result = await runStudioTask({
                 action,
                 channelSessionId,
                 ...(prompt ? { prompt } : {}),
+                ...(attachmentContext ? { attachmentContext } : {}),
             });
+            const header = formatAttachmentReadReplyHeader(attachmentResults);
+            const content = header ? `${header}\n\n${result.content}` : result.content;
+            if (result.files && result.files.length > 0) {
+                await chatInteraction.editReply({
+                    content,
+                    files: result.files,
+                });
+            } else {
+                await chatInteraction.editReply(content);
+            }
+            return;
+        }
+
+        if (chatInteraction.commandName === 'edit_doc') {
+            if (!(await requireTeacher(chatInteraction))) return;
+
+            const instruction = chatInteraction.options.getString('instruction', true).trim();
+            const attachments = collectCommandAttachments(chatInteraction, ['attachment_1', 'attachment_2', 'attachment_3']);
+            if (attachments.length === 0) {
+                await safeReply(chatInteraction, '請至少附上一份 `.md`、`.txt` 或 `.docx` 檔案。', true);
+                return;
+            }
+
+            await chatInteraction.deferReply({ ephemeral: true });
+            const output = await editAttachments(attachments, instruction);
             await chatInteraction.editReply(output);
             return;
         }
@@ -3172,6 +3286,8 @@ client.on('interactionCreate', async (interaction) => {
                 ? '❌ 題目新增失敗，請稍後再試。'
                 : chatInteraction.commandName === 'ask'
                     ? '❌ Agent 暫時無法回覆，請稍後再試。'
+                : chatInteraction.commandName === 'edit_doc'
+                    ? '❌ 文件編修失敗，請稍後再試。'
                 : '❌ 指令執行失敗，請稍後再試。';
 
         await safeReply(chatInteraction, failureMessage, true);
@@ -3193,6 +3309,7 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (!message.guild) return;
     const botUserId = client.user.id;
+    const messageAttachments = collectMessageAttachments(message);
 
     if (message.attachments.size > 0) {
         const imageAttachments = [...message.attachments.values()].filter((item) => item.contentType?.startsWith('image/'));
@@ -3208,6 +3325,21 @@ client.on('messageCreate', async (message) => {
                     ...(message.content.trim().length > 0 ? [`訊息文字: ${message.content.trim()}`] : []),
                     '圖片清單:',
                     ...attachmentLines,
+                ].join('\n'),
+                'user',
+            );
+        }
+
+        const documentAttachments = messageAttachments.filter((item) => !item.contentType?.startsWith('image/'));
+        if (documentAttachments.length > 0) {
+            await rememberChannelEvent(
+                message.channelId,
+                message.author.id,
+                [
+                    `【文件上傳】${message.author.username} 在頻道上傳了附件。`,
+                    ...(message.content.trim().length > 0 ? [`訊息文字: ${message.content.trim()}`] : []),
+                    '附件清單:',
+                    ...documentAttachments.map((item, index) => `${index + 1}. ${item.name}`),
                 ].join('\n'),
                 'user',
             );
@@ -3311,6 +3443,15 @@ client.on('messageCreate', async (message) => {
         try {
             const sessionId = buildAgentSessionId(message.author.id, message.channelId);
             const liveChannelContext = await buildLiveChannelContext(message);
+            const attachmentResults = messageAttachments.length > 0 ? await processAttachmentsForReading(messageAttachments) : [];
+            const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults) : '';
+
+            if (messageAttachments.length > 0 && isEditInstruction(prompt)) {
+                const editReply = await editAttachments(messageAttachments, prompt);
+                await message.reply(editReply);
+                return;
+            }
+
             const result = await askAgent({
                 userId: message.author.id,
                 question: prompt,
@@ -3319,9 +3460,14 @@ client.on('messageCreate', async (message) => {
                 channelId: message.guildId ?? message.channelId,
                 chatMode: true,
                 liveChannelContext,
+                ...(attachmentContext ? { attachmentContext } : {}),
             });
 
             let responseText = result.answer;
+            const attachmentHeader = formatAttachmentReadReplyHeader(attachmentResults);
+            if (attachmentHeader) {
+                responseText = `${attachmentHeader}\n\n${responseText}`;
+            }
             if (result.draftPreview) {
                 responseText += '\n\n（已產生題目草稿，請使用 `/ask` 觸發按鈕確認建立。）';
             } else if (result.shortAnswerDraftPreview) {
