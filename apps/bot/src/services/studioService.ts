@@ -1,4 +1,5 @@
 import { getRecentChatMessages } from './chatMemoryService';
+import { prepareContext } from './contextManager';
 import { generateModelText } from './llmService';
 import { formatWebSearchSummary, searchWeb } from './webSearchService';
 
@@ -7,6 +8,7 @@ type StudioAction = 'summarize_channel' | 'research';
 type RunStudioTaskInput = {
     action: StudioAction;
     channelSessionId: string;
+    userId: string;
     prompt?: string;
     attachmentContext?: string;
 };
@@ -19,6 +21,7 @@ export type StudioTaskFile = {
 export type StudioTaskResult = {
     content: string;
     files?: StudioTaskFile[];
+    compressionNotice?: string;
 };
 
 type ResearchSource = {
@@ -31,6 +34,7 @@ type ResearchSource = {
 
 type ResearchEvidencePack = {
     query: string;
+    contextSummary: string;
     attachmentContext: string;
     officialSources: ResearchSource[];
     supportingSources: ResearchSource[];
@@ -141,8 +145,9 @@ const buildSourcesSection = (sources: ResearchSource[]) => {
     )).join('\n');
 };
 
-const buildEvidencePack = (query: string, attachmentContext: string, sources: ResearchSource[]): ResearchEvidencePack => ({
+const buildEvidencePack = (query: string, attachmentContext: string, sources: ResearchSource[], contextSummary = ''): ResearchEvidencePack => ({
     query,
+    contextSummary,
     attachmentContext,
     officialSources: sources.filter((source) => source.authority === 'official' || source.authority === 'reference'),
     supportingSources: sources.filter((source) => source.authority === 'secondary'),
@@ -168,6 +173,8 @@ const getResearchPrompt = (pack: ResearchEvidencePack) => [
     '- 來源章節請列出實際網址。',
     '',
     `研究主題：${pack.query}`,
+    '',
+    `頻道上下文摘要：\n${pack.contextSummary || '（無）'}`,
     '',
     `附件內容：\n${pack.attachmentContext || '（無）'}`,
     '',
@@ -254,7 +261,19 @@ export async function runStudioTask(input: RunStudioTaskInput): Promise<StudioTa
     }
 
     const rankedSources = sortSources(rawResults);
-    const pack = buildEvidencePack(researchQuery, attachmentContext, rankedSources);
+    const researchContext = [
+        `研究主題：${researchQuery}`,
+        `官方/高可信來源：\n${buildSourcesSection(rankedSources.filter((source) => source.authority === 'official' || source.authority === 'reference'))}`,
+        `一般補充來源：\n${buildSourcesSection(rankedSources.filter((source) => source.authority === 'secondary'))}`,
+    ].join('\n\n');
+    const preparedContext = await prepareContext({
+        sessionId: input.channelSessionId,
+        userId: input.userId,
+        memoryLimit: 24,
+        ...(attachmentContext ? { attachmentContext } : {}),
+        researchContext,
+    });
+    const pack = buildEvidencePack(researchQuery, attachmentContext, rankedSources, preparedContext.summaryText);
     const reportMarkdown = await generateResearchReport(pack);
     const summaryText = await buildDiscordResearchSummary(researchQuery, reportMarkdown);
     const markdownFile: StudioTaskFile = {
@@ -265,5 +284,6 @@ export async function runStudioTask(input: RunStudioTaskInput): Promise<StudioTa
     return {
         content: ensureNonEmptyReply(summaryText, `已完成「${researchQuery}」的研究摘要，完整報告請見附件。`),
         files: [markdownFile],
+        ...(preparedContext.compressionNotice ? { compressionNotice: preparedContext.compressionNotice } : {}),
     };
 }

@@ -37,7 +37,8 @@ import {
     processAttachmentsForReading,
     type AttachmentInput,
 } from './services/attachmentService';
-import { appendChatMessage } from './services/chatMemoryService';
+import { appendChatMessage, clearChatMessages } from './services/chatMemoryService';
+import { buildContextStatus } from './services/contextManager';
 import { clearRevisionTarget, setRevisionTarget } from './services/agentRevisionStateService';
 import {
     approveQuestionBatchDraft,
@@ -744,6 +745,11 @@ const commands = [
     {
         name: 'clear_memory',
         description: '清除目前頻道中的 Agent 對話記憶與未確認題目草稿',
+    },
+    {
+        name: 'context',
+        description: '老師查看目前頻道的 Agent 上下文用量',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
     },
     {
         name: 'batch_generate',
@@ -2526,6 +2532,7 @@ client.on('interactionCreate', async (interaction) => {
             const teacherCommands = [
                 '`/model [name]` - 查看或切換 Bot 使用模型',
                 '`/agent action [prompt] [attachment_1..3]` - 執行工作室任務（摘要/研究；research 會附上完整 .md 報告）',
+                '`/context` - 查看目前頻道的 Agent 上下文用量與壓縮狀態',
                 '`/edit_doc instruction [attachment_1..3]` - 讀取文字文件並提供修訂清單與修正版',
                 '`/list` - 顯示最近 10 筆題庫',
                 '`/question id` - 查看題目詳情',
@@ -2617,11 +2624,13 @@ client.on('interactionCreate', async (interaction) => {
             const result = await runStudioTask({
                 action,
                 channelSessionId,
+                userId: chatInteraction.user.id,
                 ...(prompt ? { prompt } : {}),
                 ...(attachmentContext ? { attachmentContext } : {}),
             });
             const header = formatAttachmentReadReplyHeader(attachmentResults);
-            const content = header ? `${header}\n\n${result.content}` : result.content;
+            const body = result.compressionNotice ? `${result.compressionNotice}\n\n${result.content}` : result.content;
+            const content = header ? `${header}\n\n${body}` : body;
             if (result.files && result.files.length > 0) {
                 await chatInteraction.editReply({
                     content,
@@ -3051,12 +3060,21 @@ client.on('interactionCreate', async (interaction) => {
         if (chatInteraction.commandName === 'clear_memory') {
             const sessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
             await clearAgentMessages(sessionId);
+            await clearChatMessages(sessionId);
             await clearRevisionTarget(sessionId);
             await clearDraftsByUser(chatInteraction.user.id);
             await clearBatchDraftsByUser(chatInteraction.user.id);
             pendingShortAnswerDrafts.delete(buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId));
             pendingPollDrafts.delete(buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId));
-            await safeReply(chatInteraction, '✅ 已清除目前頻道的共享 Agent 記憶，以及你個人的未確認題目草稿。', true);
+            await safeReply(chatInteraction, '✅ 已清除目前頻道的共享 Agent 記憶、上下文壓縮摘要，以及你個人的未確認題目草稿。', true);
+            return;
+        }
+
+        if (chatInteraction.commandName === 'context') {
+            if (!(await requireTeacher(chatInteraction))) return;
+
+            const sessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
+            await safeReply(chatInteraction, await buildContextStatus(sessionId), true);
             return;
         }
 
@@ -3115,6 +3133,7 @@ client.on('interactionCreate', async (interaction) => {
                 isTeacher: await isTeacher(chatInteraction),
                 channelId: chatInteraction.guildId ?? chatInteraction.channelId,
             });
+            const compressionPrefix = result.compressionNotice ? `${result.compressionNotice}\n\n` : '';
 
             if (result.shortAnswerDraftPreview) {
                 if (!hasValidShortAnswerDraftPreview(result.shortAnswerDraftPreview)) {
@@ -3132,7 +3151,7 @@ client.on('interactionCreate', async (interaction) => {
 
                     await safeReply(
                         chatInteraction,
-                        [
+                        compressionPrefix + [
                             '✅ 簡答題已建立',
                             `ID：${question.id}`,
                             `題目：${question.content ?? '（無題目內容）'}`,
@@ -3145,7 +3164,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 await safeReply(
                     chatInteraction,
-                    [
+                    compressionPrefix + [
                         '已產生簡答題草稿，請先確認老師意見後再建立：',
                         `分類：${getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId)}`,
                         `題目：${result.shortAnswerDraftPreview.content}`,
@@ -3205,7 +3224,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 await safeReply(
                     chatInteraction,
-                    [
+                    compressionPrefix + [
                         '已產生投票草稿，請先確認後再建立：',
                         `問題：${poll.question}`,
                         `選項：${poll.options.join('｜')}`,
@@ -3239,7 +3258,7 @@ client.on('interactionCreate', async (interaction) => {
                     await clearRevisionTarget(buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId));
                     await safeReply(
                         chatInteraction,
-                        [
+                        compressionPrefix + [
                             '✅ 題目已建立',
                             `ID：${question.id}`,
                             `題目：${question.content ?? '（無題目內容）'}`,
@@ -3262,7 +3281,7 @@ client.on('interactionCreate', async (interaction) => {
                 );
 
                 await chatInteraction.followUp({
-                    content: `${result.answer}\n\n${getDraftPreviewText(
+                    content: `${compressionPrefix}${result.answer}\n\n${getDraftPreviewText(
                         result.draftPreview,
                         getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
                     )}\n\n請先確認後再建立題目。`,
@@ -3272,7 +3291,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            await safeReply(chatInteraction, result.answer, true);
+            await safeReply(chatInteraction, `${compressionPrefix}${result.answer}`, true);
             return;
         }
     } catch (error) {
@@ -3464,6 +3483,9 @@ client.on('messageCreate', async (message) => {
             });
 
             let responseText = result.answer;
+            if (result.compressionNotice) {
+                responseText = `${result.compressionNotice}\n\n${responseText}`;
+            }
             const attachmentHeader = formatAttachmentReadReplyHeader(attachmentResults);
             if (attachmentHeader) {
                 responseText = `${attachmentHeader}\n\n${responseText}`;

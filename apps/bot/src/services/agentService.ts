@@ -1,4 +1,5 @@
-import { appendChatMessage, getRecentChatMessages } from './chatMemoryService';
+import { appendChatMessage } from './chatMemoryService';
+import { prepareContext } from './contextManager';
 import { resolveAgentIntent, shouldDenyStudentScope } from './agentAnalysisRuntime';
 import { buildStructuredInsight } from './agentInsightService';
 import { generateQuestionDraft, generateShortAnswerQuestionPayload, reviseQuestionDraft } from './aiQuestionService';
@@ -47,6 +48,7 @@ export type AskAgentResult = {
     draftPreview?: DraftPreview;
     shortAnswerDraftPreview?: ShortAnswerDraftPreview;
     pollDraftPreview?: PollDraftPreview;
+    compressionNotice?: string;
 };
 
 export const buildAgentSessionId = (_userId: string, channelId: string) => `channel:${channelId}`;
@@ -426,12 +428,22 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
         }
     }
 
-    const memory = await getRecentChatMessages(input.sessionId, 8);
+    const preparedContext = await prepareContext({
+        sessionId: input.sessionId,
+        userId: input.userId,
+        memoryLimit: 8,
+        ...(input.liveChannelContext ? { liveChannelContext: input.liveChannelContext } : {}),
+        ...(input.attachmentContext ? { attachmentContext: input.attachmentContext } : {}),
+    });
+    const memory = preparedContext.memory;
     const toolOutputs = await runReadOnlyTools(input.userId, input.channelId, input.question);
     const webSearchQuestion = resolveWebSearchQuestion(input.question, memory);
     const useWebSearch = await shouldUseWebSearch(webSearchQuestion);
     const webResults = useWebSearch ? await searchWeb(webSearchQuestion, 5) : [];
-    const memoryText = memory.map((m) => `${m.role === 'user' ? '使用者' : '助教'}: ${m.content}`).join('\n');
+    const memoryText = [
+        preparedContext.summaryText ? `上下文摘要:\n${preparedContext.summaryText}` : '',
+        memory.map((m) => `${m.role === 'user' ? '使用者' : '助教'}: ${m.content}`).join('\n'),
+    ].filter((item) => item.trim().length > 0).join('\n\n');
 
     const prompt = [
         readMultilineEnv('AGENT_SYSTEM_PROMPT', DEFAULT_AGENT_SYSTEM_PROMPT),
@@ -477,7 +489,7 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
             role: 'assistant',
             content: fallback,
         });
-        return { answer: fallback };
+        return { answer: fallback, ...(preparedContext.compressionNotice ? { compressionNotice: preparedContext.compressionNotice } : {}) };
     }
 
     await appendChatMessage({
@@ -486,5 +498,5 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
         role: 'assistant',
         content: answer,
     });
-    return { answer };
+    return { answer, ...(preparedContext.compressionNotice ? { compressionNotice: preparedContext.compressionNotice } : {}) };
 }
