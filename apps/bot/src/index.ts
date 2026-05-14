@@ -2628,7 +2628,6 @@ client.on('interactionCreate', async (interaction) => {
                     ...studentCommands,
                     ...(teacher ? teacherCommands : []),
                 ].join('\n'),
-                ephemeral: false // 設為 true 則只有指令發送者看得到
             });
             return;
         }
@@ -2692,6 +2691,7 @@ client.on('interactionCreate', async (interaction) => {
         if (chatInteraction.commandName === 'agent') {
             if (!(await requireTeacher(chatInteraction))) return;
 
+            await chatInteraction.deferReply({ flags: MessageFlags.Ephemeral });
             const action = chatInteraction.options.getString('action', true) as 'summarize_channel' | 'research';
             const prompt = chatInteraction.options.getString('prompt')?.trim();
             const channelSessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
@@ -2699,7 +2699,6 @@ client.on('interactionCreate', async (interaction) => {
             const attachmentResults = attachments.length > 0 ? await processAttachmentsForReading(attachments) : [];
             const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults) : '';
 
-            await chatInteraction.deferReply({ ephemeral: true });
             const result = await runStudioTask({
                 action,
                 channelSessionId,
@@ -2731,7 +2730,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            await chatInteraction.deferReply({ ephemeral: true });
+            await chatInteraction.deferReply({ flags: MessageFlags.Ephemeral });
             const output = await editAttachments(attachments, instruction);
             await chatInteraction.editReply(output);
             return;
@@ -2789,7 +2788,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            await chatInteraction.deferReply({ ephemeral: false });
+            await chatInteraction.deferReply();
             const image = await generateImageFromPrompt(prompt);
             const replyText = await buildImageReplyText(prompt);
             const sent = await chatInteraction.editReply({
@@ -3164,11 +3163,11 @@ client.on('interactionCreate', async (interaction) => {
             const count = chatInteraction.options.getInteger('count', true);
             const categoryOverride = getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId);
 
-            await chatInteraction.deferReply({ ephemeral: true });
+            await chatInteraction.deferReply({ flags: MessageFlags.Ephemeral });
             const batchDraft = await generateQuestionBatchDraft(chatInteraction.user.id, prompt, count);
             await chatInteraction.followUp({
                 ...buildBatchDraftMessage(batchDraft, categoryOverride),
-                ephemeral: true,
+                flags: MessageFlags.Ephemeral,
             });
             return;
         }
@@ -3204,7 +3203,7 @@ client.on('interactionCreate', async (interaction) => {
                     ].join('\n')
                     : prompt;
 
-            await chatInteraction.deferReply({ ephemeral: true });
+            await chatInteraction.deferReply({ flags: MessageFlags.Ephemeral });
             const result = await askAgent({
                 userId: chatInteraction.user.id,
                 question: effectivePrompt,
@@ -3365,7 +3364,7 @@ client.on('interactionCreate', async (interaction) => {
                         getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
                     )}\n\n請先確認後再建立題目。`,
                     components: [row],
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                 });
                 return;
             }
