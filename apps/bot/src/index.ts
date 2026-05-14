@@ -76,6 +76,14 @@ import { isTeacher, requireTeacher } from './utils/roleGuard';
 // 載入環境變數
 dotenv.config();
 
+process.on('unhandledRejection', (reason) => {
+    console.error('❌ 未處理的 Promise rejection：', formatError(reason));
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ 未捕捉例外：', formatError(error));
+});
+
 const ensureVertexCredentialsFromEnv = () => {
     const provider = (process.env.GEMINI_PROVIDER || 'gemini').toLowerCase();
     if (provider !== 'vertex') {
@@ -170,6 +178,14 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
     ],
+});
+
+client.on('error', (error) => {
+    console.error('❌ Discord client error：', formatError(error));
+});
+
+client.on('warn', (warning) => {
+    console.warn('⚠️ Discord client warning：', warning);
 });
 
 const readEnvFileLines = () => {
@@ -3527,4 +3543,7 @@ healthServer.listen(renderPort, () => {
 });
 
 // 啟動機器人
-client.login(token);
+client.login(token).catch((error) => {
+    console.error('❌ Discord 登入失敗：', formatError(error));
+    healthServer.close(() => process.exit(1));
+});
