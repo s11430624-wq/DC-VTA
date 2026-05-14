@@ -8,6 +8,8 @@
 - 壓縮摘要會保留主題、決策、待辦、來源與限制，避免長對話直接被截斷。
 - `/clear_memory` 會同步清掉上下文壓縮摘要。
 - 新增 `public.chat_messages` migration，作為正式 Agent 對話記憶表。
+- 新增 `/bot_status`，可查看目前 Bot instance、部署、模型與 context 設定。
+- 指令紀錄新增耗時與 instance id，方便排查未回應或重複回覆。
 
 ## 2026-05-15
 

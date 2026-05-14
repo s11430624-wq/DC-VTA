@@ -154,6 +154,15 @@ const DEFAULT_POLL_DURATION_HOURS = 24;
 const MAX_POLL_OPTIONS = 10;
 const TEACHER_COMMAND_DEFAULT_PERMISSIONS = PermissionFlagsBits.ManageGuild.toString();
 const ENV_FILE_PATH = path.resolve(process.cwd(), '.env');
+const STARTED_AT = new Date();
+const INSTANCE_ID = [
+    os.hostname(),
+    process.pid,
+    STARTED_AT.toISOString().replace(/[-:.TZ]/g, '').slice(0, 14),
+].join('-');
+let discordReadyAt: Date | null = null;
+let lastInteractionAt: Date | null = null;
+let handledInteractionCount = 0;
 const SUPPORTED_MODELS = [
     'gemini-2.5-flash-lite',
     'gemini-2.5-flash',
@@ -472,6 +481,12 @@ const commands = [
                 choices: SUPPORTED_MODELS.map((model) => ({ name: model, value: model })),
             },
         ],
+    },
+    {
+        name: 'bot_status',
+        description: '老師查看 Bot instance、部署與模型狀態',
+        default_member_permissions: TEACHER_COMMAND_DEFAULT_PERMISSIONS,
+        dm_permission: false,
     },
     {
         name: 'agent',
@@ -1328,10 +1343,44 @@ const buildCommandResultSummary = (status: 'success' | 'error', errorText: strin
     return `失敗：${(errorText ?? '未知錯誤').slice(0, 200)}`;
 };
 
+const formatDuration = (milliseconds: number) => {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours}h ${minutes}m ${seconds}s`;
+};
+
+const formatOptionalDate = (value: Date | null) => value?.toISOString() ?? '尚未發生';
+
+const buildBotStatusText = () => [
+    'Bot 狀態',
+    `Instance ID: ${INSTANCE_ID}`,
+    `Commit: ${process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'local/unknown'}`,
+    `啟動時間: ${STARTED_AT.toISOString()}`,
+    `Uptime: ${formatDuration(Date.now() - STARTED_AT.getTime())}`,
+    `Discord ready: ${formatOptionalDate(discordReadyAt)}`,
+    `登入身分: ${client.user?.tag ?? '尚未登入'}`,
+    `Guild 數: ${client.guilds.cache.size}`,
+    `已處理 interactions: ${handledInteractionCount}`,
+    `最後 interaction: ${formatOptionalDate(lastInteractionAt)}`,
+    '',
+    '模型與 Context',
+    `GEMINI_MODEL: ${process.env.GEMINI_MODEL || '未設定'}`,
+    `QUESTION_MODEL: ${process.env.QUESTION_MODEL || '未設定'}`,
+    `GEMINI_PROVIDER: ${process.env.GEMINI_PROVIDER || 'gemini'}`,
+    `GCP_LOCATION: ${process.env.GCP_LOCATION || '未設定'}`,
+    `CONTEXT_TOKEN_BUDGET: ${process.env.CONTEXT_TOKEN_BUDGET || '128000'}`,
+    `CONTEXT_COMPRESSION_TRIGGER_RATIO: ${process.env.CONTEXT_COMPRESSION_TRIGGER_RATIO || '0.9'}`,
+    `CONTEXT_RECENT_MESSAGES_KEEP: ${process.env.CONTEXT_RECENT_MESSAGES_KEEP || '12'}`,
+    `CONTEXT_SUMMARY_MAX_TOKENS: ${process.env.CONTEXT_SUMMARY_MAX_TOKENS || '5000'}`,
+].join('\n');
+
 const notifyCommandUsage = async (params: {
     interaction: ChatInputCommandInteraction;
     status: 'success' | 'error';
     errorText: string | null;
+    durationMs: number;
 }) => {
     const channel = await resolveCommandAuditChannel(params.interaction.guild);
     if (!channel) {
@@ -1382,6 +1431,8 @@ const notifyCommandUsage = async (params: {
             { name: '伺服器', value: params.interaction.guild?.name ?? '未知伺服器', inline: true },
             { name: '參數', value: formatCommandOptions(params.interaction), inline: false },
             { name: '結果', value: buildCommandResultSummary(params.status, params.errorText), inline: false },
+            { name: '耗時', value: `${params.durationMs} ms`, inline: true },
+            { name: 'Instance', value: INSTANCE_ID, inline: false },
         )
         .setTimestamp(new Date());
 
@@ -2287,7 +2338,9 @@ const handleBatchDraftSelection = async (interaction: StringSelectMenuInteractio
 
 // 當機器人準備就緒時觸發
 client.once('clientReady', async () => {
+    discordReadyAt = new Date();
     console.log(`✅ 機器人已上線！登入身分：${client.user?.tag}`);
+    console.log(`🧭 Bot instance id: ${INSTANCE_ID}`);
 
     const rest = new REST({ version: '10' }).setToken(token);
 
@@ -2528,6 +2581,9 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     const chatInteraction = interaction as ChatInputCommandInteraction;
+    const commandStartedAt = Date.now();
+    lastInteractionAt = new Date(commandStartedAt);
+    handledInteractionCount += 1;
     let commandAuditStatus: 'success' | 'error' = 'success';
     let commandAuditErrorText: string | null = null;
 
@@ -2547,6 +2603,7 @@ client.on('interactionCreate', async (interaction) => {
             ];
             const teacherCommands = [
                 '`/model [name]` - 查看或切換 Bot 使用模型',
+                '`/bot_status` - 查看目前 Bot instance、部署與模型狀態',
                 '`/agent action [prompt] [attachment_1..3]` - 執行工作室任務（摘要/研究；research 會附上完整 .md 報告）',
                 '`/context` - 查看目前頻道的 Agent 上下文用量與壓縮狀態',
                 '`/edit_doc instruction [attachment_1..3]` - 讀取文字文件並提供修訂清單與修正版',
@@ -2573,6 +2630,12 @@ client.on('interactionCreate', async (interaction) => {
                 ].join('\n'),
                 ephemeral: false // 設為 true 則只有指令發送者看得到
             });
+            return;
+        }
+
+        if (chatInteraction.commandName === 'bot_status') {
+            if (!(await requireTeacher(chatInteraction))) return;
+            await safeReply(chatInteraction, buildBotStatusText(), true);
             return;
         }
 
@@ -3332,6 +3395,7 @@ client.on('interactionCreate', async (interaction) => {
                 interaction: chatInteraction,
                 status: commandAuditStatus,
                 errorText: commandAuditErrorText,
+                durationMs: Date.now() - commandStartedAt,
             });
         } catch (error) {
             console.warn('⚠️ 指令紀錄發送失敗：', formatError(error));
