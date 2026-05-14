@@ -1,10 +1,14 @@
-import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
-import { Resvg } from '@resvg/resvg-js';
 import { generateModelText, type GenerateModelPart } from './llmService';
 
-const pdfParse = require('pdf-parse') as (buffer: Buffer) => Promise<{ text?: string }>;
+type PdfParseFn = (buffer: Buffer) => Promise<{ text?: string }>;
+type MammothModule = typeof import('mammoth');
+type ResvgConstructor = typeof import('@resvg/resvg-js').Resvg;
+
+const loadPdfParse = (): PdfParseFn => require('pdf-parse') as PdfParseFn;
+const loadMammoth = (): MammothModule => require('mammoth') as MammothModule;
+const loadResvg = (): ResvgConstructor => require('@resvg/resvg-js').Resvg as ResvgConstructor;
 
 export type AttachmentInput = {
     name: string;
@@ -414,6 +418,7 @@ const summarizePptxSlide = async (slide: PptxSlide, pngBuffer: Buffer) => {
 };
 
 const extractPptxDocument = async (buffer: Buffer): Promise<ExtractedDocument> => {
+    const Resvg = loadResvg();
     const zip = await JSZip.loadAsync(buffer);
     const slideFiles = zip.file(/^ppt\/slides\/slide\d+\.xml$/).sort((a, b) => {
         const left = Number(/slide(\d+)\.xml$/i.exec(a.name)?.[1] ?? 0);
@@ -499,6 +504,7 @@ const extractDocument = async (attachment: AttachmentInput, buffer: Buffer): Pro
     }
 
     if (fileType === 'pdf') {
+        const pdfParse = loadPdfParse();
         const parsed = await pdfParse(buffer);
         return {
             fileType,
@@ -508,6 +514,7 @@ const extractDocument = async (attachment: AttachmentInput, buffer: Buffer): Pro
     }
 
     if (fileType === 'docx') {
+        const mammoth = loadMammoth();
         const parsed = await mammoth.extractRawText({ buffer });
         return {
             fileType,
