@@ -5,8 +5,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
-    "build": "npm run typecheck",
-    "start": "ts-node src/index.ts",
+    "compile": "tsc",
+    "build": "npm run typecheck && npm run compile",
+    "start": "npm run compile && node dist/index.js",
     "probe:vertex-models": "ts-node src/scripts/probeVertexModels.ts",
     "classroom:start": "node ../../scripts/start_local_classroom.cjs",
     "test:unit": "node --test -r ts-node/register src/services/*.test.ts",
