@@ -17,6 +17,8 @@
     TextInputBuilder,
     TextInputStyle,
     type APIEmbedField,
+    type Message,
+    type MessageReaction,
     type StringSelectMenuInteraction,
 } from 'discord.js';
 import dotenv from 'dotenv';
@@ -275,6 +277,29 @@ const buildImageReplyText = async (prompt: string) => {
     }
 
     return '好，這張幫你生好了，看看這個版本合不合你想像。';
+};
+
+const THINKING_REACTION = process.env.THINKING_REACTION?.trim() || '🤓';
+
+const addThinkingReaction = async (message: Message): Promise<MessageReaction | null> => {
+    try {
+        return await message.react(THINKING_REACTION);
+    } catch (error) {
+        console.warn('⚠️ 無法加入思考表情：', formatError(error));
+        return null;
+    }
+};
+
+const clearThinkingReaction = async (reaction: MessageReaction | null) => {
+    if (!reaction) return;
+
+    try {
+        const botUserId = reaction.client.user?.id;
+        if (!botUserId) return;
+        await reaction.users.remove(botUserId);
+    } catch (error) {
+        console.warn('⚠️ 無法移除思考表情：', formatError(error));
+    }
 };
 
 const detectMentionIntent = async (rawPrompt: string): Promise<MentionIntentResult> => {
@@ -3182,100 +3207,106 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    if (looksLikeImagePrompt(prompt)) {
-        try {
-            const image = await generateImageFromPrompt(prompt);
-            const replyText = await buildImageReplyText(prompt);
-            const sent = await message.reply({
-                content: replyText,
-                files: [
-                    {
-                        attachment: image.bytes,
-                        name: `generated-${Date.now()}.png`,
-                    },
-                ],
-            });
-            const url = sent.attachments.first()?.url;
-            await rememberChannelEvent(
-                message.channelId,
-                message.author.id,
-                `【圖片生成】使用者透過視覺描述觸發生成圖片。Prompt: ${prompt}${url ? `\n圖片URL: ${url}` : ''}`,
-                'assistant',
-            );
-        } catch (error) {
-            console.error('❌ @機器人圖片生成失敗：', formatError(error));
-            await message.reply('❌ 目前無法生成圖片，請稍後再試。');
-        }
-        return;
-    }
+    const thinkingReaction = await addThinkingReaction(message);
 
-    let detectedIntent: MentionIntentResult = { intent: 'chat', prompt };
     try {
-        detectedIntent = await detectMentionIntent(prompt);
-    } catch (error) {
-        console.warn('⚠️ @機器人意圖判斷失敗，改用關鍵字備援：', formatError(error));
-        const fallbackMatch = /^(畫圖|畫|生成圖片|產生圖片|image)\s*(?:[:：]\s*|\s+)(.+)$/i.exec(prompt);
-        if (fallbackMatch) {
-            detectedIntent = { intent: 'image', prompt: (fallbackMatch[2] ?? '').trim() };
-        }
-    }
-
-    if (detectedIntent.intent === 'image') {
-        const imagePrompt = detectedIntent.prompt.trim();
-        if (!imagePrompt) {
-            await message.reply('請在 `畫圖:` 後輸入描述，例如：`@VTA 畫圖: 一隻戴眼鏡的柴犬`');
+        if (looksLikeImagePrompt(prompt)) {
+            try {
+                const image = await generateImageFromPrompt(prompt);
+                const replyText = await buildImageReplyText(prompt);
+                const sent = await message.reply({
+                    content: replyText,
+                    files: [
+                        {
+                            attachment: image.bytes,
+                            name: `generated-${Date.now()}.png`,
+                        },
+                    ],
+                });
+                const url = sent.attachments.first()?.url;
+                await rememberChannelEvent(
+                    message.channelId,
+                    message.author.id,
+                    `【圖片生成】使用者透過視覺描述觸發生成圖片。Prompt: ${prompt}${url ? `\n圖片URL: ${url}` : ''}`,
+                    'assistant',
+                );
+            } catch (error) {
+                console.error('❌ @機器人圖片生成失敗：', formatError(error));
+                await message.reply('❌ 目前無法生成圖片，請稍後再試。');
+            }
             return;
         }
+
+        let detectedIntent: MentionIntentResult = { intent: 'chat', prompt };
         try {
-            const image = await generateImageFromPrompt(imagePrompt);
-            const replyText = await buildImageReplyText(imagePrompt);
-            const sent = await message.reply({
-                content: replyText,
-                files: [
-                    {
-                        attachment: image.bytes,
-                        name: `generated-${Date.now()}.png`,
-                    },
-                ],
-            });
-            const url = sent.attachments.first()?.url;
-            await rememberChannelEvent(
-                message.channelId,
-                message.author.id,
-                `【圖片生成】使用者透過@機器人請求生成圖片。Prompt: ${imagePrompt}${url ? `\n圖片URL: ${url}` : ''}`,
-                'assistant',
-            );
+            detectedIntent = await detectMentionIntent(prompt);
         } catch (error) {
-            console.error('❌ @機器人圖片生成失敗：', formatError(error));
-            await message.reply('❌ 目前無法生成圖片，請稍後再試。');
-        }
-        return;
-    }
-
-    try {
-        const sessionId = buildAgentSessionId(message.author.id, message.channelId);
-        const result = await askAgent({
-            userId: message.author.id,
-            question: prompt,
-            sessionId,
-            isTeacher: false,
-            channelId: message.guildId ?? message.channelId,
-            chatMode: true,
-        });
-
-        let responseText = result.answer;
-        if (result.draftPreview) {
-            responseText += '\n\n（已產生題目草稿，請使用 `/ask` 觸發按鈕確認建立。）';
-        } else if (result.shortAnswerDraftPreview) {
-            responseText += '\n\n（已產生簡答題草稿，請使用 `/ask` 進行確認建立。）';
-        } else if (result.pollDraftPreview) {
-            responseText += '\n\n（已產生投票草稿，請使用 `/ask` 進行確認建立。）';
+            console.warn('⚠️ @機器人意圖判斷失敗，改用關鍵字備援：', formatError(error));
+            const fallbackMatch = /^(畫圖|畫|生成圖片|產生圖片|image)\s*(?:[:：]\s*|\s+)(.+)$/i.exec(prompt);
+            if (fallbackMatch) {
+                detectedIntent = { intent: 'image', prompt: (fallbackMatch[2] ?? '').trim() };
+            }
         }
 
-        await message.reply(responseText);
-    } catch (error) {
-        console.error('❌ @機器人對話失敗：', formatError(error));
-        await message.reply('❌ 目前無法回覆，請稍後再試。');
+        if (detectedIntent.intent === 'image') {
+            const imagePrompt = detectedIntent.prompt.trim();
+            if (!imagePrompt) {
+                await message.reply('請在 `畫圖:` 後輸入描述，例如：`@VTA 畫圖: 一隻戴眼鏡的柴犬`');
+                return;
+            }
+            try {
+                const image = await generateImageFromPrompt(imagePrompt);
+                const replyText = await buildImageReplyText(imagePrompt);
+                const sent = await message.reply({
+                    content: replyText,
+                    files: [
+                        {
+                            attachment: image.bytes,
+                            name: `generated-${Date.now()}.png`,
+                        },
+                    ],
+                });
+                const url = sent.attachments.first()?.url;
+                await rememberChannelEvent(
+                    message.channelId,
+                    message.author.id,
+                    `【圖片生成】使用者透過@機器人請求生成圖片。Prompt: ${imagePrompt}${url ? `\n圖片URL: ${url}` : ''}`,
+                    'assistant',
+                );
+            } catch (error) {
+                console.error('❌ @機器人圖片生成失敗：', formatError(error));
+                await message.reply('❌ 目前無法生成圖片，請稍後再試。');
+            }
+            return;
+        }
+
+        try {
+            const sessionId = buildAgentSessionId(message.author.id, message.channelId);
+            const result = await askAgent({
+                userId: message.author.id,
+                question: prompt,
+                sessionId,
+                isTeacher: false,
+                channelId: message.guildId ?? message.channelId,
+                chatMode: true,
+            });
+
+            let responseText = result.answer;
+            if (result.draftPreview) {
+                responseText += '\n\n（已產生題目草稿，請使用 `/ask` 觸發按鈕確認建立。）';
+            } else if (result.shortAnswerDraftPreview) {
+                responseText += '\n\n（已產生簡答題草稿，請使用 `/ask` 進行確認建立。）';
+            } else if (result.pollDraftPreview) {
+                responseText += '\n\n（已產生投票草稿，請使用 `/ask` 進行確認建立。）';
+            }
+
+            await message.reply(responseText);
+        } catch (error) {
+            console.error('❌ @機器人對話失敗：', formatError(error));
+            await message.reply('❌ 目前無法回覆，請稍後再試。');
+        }
+    } finally {
+        await clearThinkingReaction(thinkingReaction);
     }
 });
 

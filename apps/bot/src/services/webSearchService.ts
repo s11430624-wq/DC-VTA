@@ -1,3 +1,5 @@
+import type { ChatMessage } from './chatMemoryService';
+
 type SearchItem = {
     title: string;
     link: string;
@@ -17,14 +19,35 @@ const normalizeSearchQuery = (question: string) => {
     return question;
 };
 
+const SEARCH_FOLLOWUP_PATTERN = /^(你)?(幫我)?(去)?(上網查|查一下|查查|查證一下|幫我找|搜尋一下)(吧|一下)?[。！？!?. ]*$/i;
+
 const shouldSearchByRegex = (question: string) => {
     const q = question.toLowerCase();
-    return /(今天|最新|新聞|最近|即時|查一下|幫我查|是什麼|誰是|多少錢|價格|release|version|news|latest|current|today|what is|who is)/i.test(q);
+    return /(今天|最新|新聞|最近|即時|查一下|幫我查|上網查|查證|幫我找|是什麼|誰是|多少錢|價格|release|version|news|latest|current|today|what is|who is)/i.test(q);
 };
 
 export async function shouldUseWebSearch(question: string): Promise<boolean> {
     if (!getSerpApiKey()) return false;
     return shouldSearchByRegex(question);
+}
+
+export function resolveWebSearchQuestion(question: string, memory: ChatMessage[]): string {
+    const trimmed = question.trim();
+    if (!SEARCH_FOLLOWUP_PATTERN.test(trimmed)) {
+        return trimmed;
+    }
+
+    for (let i = memory.length - 1; i >= 0; i -= 1) {
+        const entry = memory[i];
+        if (!entry) continue;
+        if (entry.role !== 'user') continue;
+        const candidate = entry.content.trim();
+        if (!candidate || candidate === trimmed) continue;
+        if (SEARCH_FOLLOWUP_PATTERN.test(candidate)) continue;
+        return candidate;
+    }
+
+    return trimmed;
 }
 
 export async function searchWeb(question: string, limit = 5): Promise<SearchItem[]> {

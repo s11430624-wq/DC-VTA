@@ -7,7 +7,7 @@ import { generateModelText } from './llmService';
 import { getQuestionById, getRecentQuestions } from './questionService';
 import { getUserByDiscordId, getUsersByIds } from './userService';
 import { getAllQuizResponses, getQuizResponsesByGroupId, getUserQuizStats, isRankEligibleResponse } from './quizService';
-import { formatWebSearchSummary, searchWeb, shouldUseWebSearch } from './webSearchService';
+import { formatWebSearchSummary, resolveWebSearchQuestion, searchWeb, shouldUseWebSearch } from './webSearchService';
 
 type AskAgentInput = {
     userId: string;
@@ -426,8 +426,9 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
 
     const memory = await getRecentChatMessages(input.sessionId, 8);
     const toolOutputs = await runReadOnlyTools(input.userId, input.channelId, input.question);
-    const useWebSearch = await shouldUseWebSearch(input.question);
-    const webResults = useWebSearch ? await searchWeb(input.question, 5) : [];
+    const webSearchQuestion = resolveWebSearchQuestion(input.question, memory);
+    const useWebSearch = await shouldUseWebSearch(webSearchQuestion);
+    const webResults = useWebSearch ? await searchWeb(webSearchQuestion, 5) : [];
     const memoryText = memory.map((m) => `${m.role === 'user' ? '使用者' : '助教'}: ${m.content}`).join('\n');
 
     const prompt = [
@@ -438,6 +439,10 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
         `工具資訊:\n${toolOutputs.join('\n') || '（本次無命中工具）'}`,
         '',
         `網路搜尋結果:\n${formatWebSearchSummary(webResults)}`,
+        '',
+        '若網路搜尋結果不是「（無）」：',
+        '- 你必須優先根據搜尋結果回答，且不要聲稱自己無法上網或無法即時查詢。',
+        '- 請在回答最後附上「來源」段落並列出使用到的網址。',
         '',
         `使用者問題: ${input.question}`,
         '',
