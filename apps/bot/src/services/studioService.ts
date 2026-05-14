@@ -212,8 +212,57 @@ const generateResearchReport = async (pack: ResearchEvidencePack) => {
     return ensureNonEmptyReply(markdown, buildResearchFallbackSummary(pack.query, [...pack.officialSources, ...pack.supportingSources]));
 };
 
+const buildSummarizeChannelPrompt = (input: {
+    channelLines: string;
+    attachmentContext: string;
+    prompt?: string | undefined;
+}) => {
+    const userPrompt = input.prompt?.trim() || '';
+    const attachmentContext = input.attachmentContext.trim();
+    const channelLines = input.channelLines.trim();
+
+    if (attachmentContext && userPrompt) {
+        return [
+            '你是文件分析助理，請用繁體中文直接回答使用者對附件的要求。',
+            '重要規則：',
+            '- 使用者要求優先於任何固定格式。',
+            '- 不要套用固定的會議摘要模板。',
+            '- 若使用者問表格，請聚焦說明表格目的、欄位/變項、主要數值趨勢、統計意義、可得結論與限制。',
+            '- 若附件內容不足以回答，請明確指出缺少哪一頁、哪個表格或哪個數值，不要用聊天內容硬湊。',
+            '- 頻道對話只能當背景，不可蓋過附件內容。',
+            '',
+            `使用者要求：${userPrompt}`,
+            '',
+            `附件內容：\n${attachmentContext}`,
+            '',
+            `頻道背景：\n${channelLines || '（無）'}`,
+        ].join('\n');
+    }
+
+    if (attachmentContext) {
+        return [
+            '你是文件與頻道整理助理，請用繁體中文整理附件內容，並在必要時補充頻道背景。',
+            '請依內容自然分段，優先整理附件本身的重點、證據、結論與限制。',
+            '不要套用固定的會議摘要模板；如果需要列點，請用貼近文件內容的標題。',
+            '',
+            `附件內容：\n${attachmentContext}`,
+            '',
+            `頻道背景：\n${channelLines || '（無）'}`,
+        ].join('\n');
+    }
+
+    return [
+        '你是頻道內容整理助理，請用繁體中文整理對話重點。',
+        '請依實際對話內容自然分段，避免套用固定模板。',
+        '如果有行動項目或待釐清問題，可以在相關段落中提到，但不要硬湊。',
+        '',
+        `對話內容：\n${channelLines}`,
+    ].join('\n');
+};
+
 export const __studioServiceForTests = {
     ensureNonEmptyReply,
+    buildSummarizeChannelPrompt,
     buildResearchFallbackSummary,
     slugifyReportName,
     sortSources,
@@ -224,7 +273,8 @@ export async function runStudioTask(input: RunStudioTaskInput): Promise<StudioTa
     if (input.action === 'summarize_channel') {
         const memory = await getRecentChatMessages(input.channelSessionId, 24);
         const lines = memory.map((m) => `${m.role === 'assistant' ? '助教' : '使用者'}: ${m.content}`).join('\n');
-        if (!lines.trim()) {
+        const attachmentContext = input.attachmentContext?.trim() || '';
+        if (!lines.trim() && !attachmentContext) {
             return { content: '目前頻道沒有可整理的共享記憶。' };
         }
 
@@ -232,18 +282,11 @@ export async function runStudioTask(input: RunStudioTaskInput): Promise<StudioTa
             model: DEFAULT_SUMMARIZE_MODEL(),
             temperature: 0.2,
             maxOutputTokens: 900,
-            prompt: [
-                '你是會議整理助理，請用繁體中文整理重點。',
-                '輸出格式：',
-                '1) 今日重點',
-                '2) 待辦事項',
-                '3) 未解問題',
-                '每區塊 2-6 行，避免冗長。',
-                '',
-                `對話內容：\n${lines}`,
-                '',
-                `附件內容：\n${input.attachmentContext?.trim() || '（無）'}`,
-            ].join('\n'),
+            prompt: buildSummarizeChannelPrompt({
+                channelLines: lines,
+                attachmentContext,
+                prompt: input.prompt,
+            }),
         });
 
         return { content: ensureNonEmptyReply(summary, '目前整理失敗，沒有產生可顯示的摘要，請稍後再試。') };

@@ -61,3 +61,16 @@ test('extractPdfTextFromBuffer reads text with current pdf-parse API', async () 
 
     assert.match(text, /Hello PDF/);
 });
+
+test('buildFocusedExcerpt centers excerpt around requested table', () => {
+    const text = [
+        '前言內容。'.repeat(500),
+        'Table 3 shows the regression results for learning performance and cognitive load.',
+        '後續內容。'.repeat(500),
+    ].join('\n');
+
+    const excerpt = __attachmentServiceForTests.buildFocusedExcerpt(text, '請解釋 Table 3', 300);
+
+    assert.match(excerpt, /Table 3 shows/);
+    assert.ok(excerpt.indexOf('Table 3 shows') < 200);
+});

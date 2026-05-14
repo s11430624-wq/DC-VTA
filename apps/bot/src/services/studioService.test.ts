@@ -61,3 +61,42 @@ test('research source ranking prioritizes official and reference hosts', () => {
 test('research model is fixed to gemini-3.1-pro-preview', () => {
     assert.equal(__studioServiceForTests.getResearchModel(), 'gemini-3.1-pro-preview');
 });
+
+test('summarize prompt answers attachment question instead of meeting template', () => {
+    const prompt = __studioServiceForTests.buildSummarizeChannelPrompt({
+        channelLines: '使用者: 請看論文',
+        attachmentContext: '檔名：paper.pdf\n可查詢原文片段：\nTable 3 regression results...',
+        prompt: '請解釋 Table 3',
+    });
+
+    assert.match(prompt, /文件分析助理/);
+    assert.match(prompt, /請解釋 Table 3/);
+    assert.match(prompt, /表格目的/);
+    assert.doesNotMatch(prompt, /1\) 今日重點/);
+    assert.doesNotMatch(prompt, /待辦事項/);
+    assert.doesNotMatch(prompt, /未解問題/);
+});
+
+test('summarize prompt avoids fixed meeting template for chat-only summaries', () => {
+    const prompt = __studioServiceForTests.buildSummarizeChannelPrompt({
+        channelLines: '使用者: 今天討論作業',
+        attachmentContext: '',
+    });
+
+    assert.match(prompt, /自然分段/);
+    assert.doesNotMatch(prompt, /1\) 今日重點/);
+    assert.doesNotMatch(prompt, /2\) 待辦事項/);
+    assert.doesNotMatch(prompt, /3\) 未解問題/);
+});
+
+test('summarize prompt avoids fixed meeting template for attachment summaries', () => {
+    const prompt = __studioServiceForTests.buildSummarizeChannelPrompt({
+        channelLines: '',
+        attachmentContext: '檔名：paper.pdf\n摘要：研究摘要',
+    });
+
+    assert.match(prompt, /附件本身的重點/);
+    assert.doesNotMatch(prompt, /今日重點/);
+    assert.doesNotMatch(prompt, /待辦事項/);
+    assert.doesNotMatch(prompt, /未解問題/);
+});

@@ -167,6 +167,7 @@ const SUPPORTED_MODELS = [
     'gemini-2.5-flash-lite',
     'gemini-2.5-flash',
     'gemini-2.5-pro',
+    'gemini-3-flash-preview',
     'gemini-3.1-flash-lite-preview',
     'gemini-3.1-pro-preview',
 ] as const;
@@ -175,6 +176,7 @@ const DEFAULT_LOCATION_BY_MODEL: Record<SupportedModel, string> = {
     'gemini-2.5-flash-lite': 'us-central1',
     'gemini-2.5-flash': 'us-central1',
     'gemini-2.5-pro': 'us-central1',
+    'gemini-3-flash-preview': 'global',
     'gemini-3.1-flash-lite-preview': 'global',
     'gemini-3.1-pro-preview': 'global',
 };
@@ -506,7 +508,7 @@ const commands = [
             },
             {
                 name: 'prompt',
-                description: 'research 任務的查詢主題',
+                description: '補充要求，例如研究主題、要解釋的表格或附件整理方向',
                 type: ApplicationCommandOptionType.String,
                 required: false,
             },
@@ -2697,7 +2699,7 @@ client.on('interactionCreate', async (interaction) => {
             const channelSessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
             const attachments = collectCommandAttachments(chatInteraction, ['attachment_1', 'attachment_2', 'attachment_3']);
             const attachmentResults = attachments.length > 0 ? await processAttachmentsForReading(attachments) : [];
-            const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults) : '';
+            const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults, prompt ?? '') : '';
 
             const result = await runStudioTask({
                 action,
@@ -3542,7 +3544,7 @@ client.on('messageCreate', async (message) => {
             const sessionId = buildAgentSessionId(message.author.id, message.channelId);
             const liveChannelContext = await buildLiveChannelContext(message);
             const attachmentResults = messageAttachments.length > 0 ? await processAttachmentsForReading(messageAttachments) : [];
-            const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults) : '';
+            const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults, prompt) : '';
 
             if (messageAttachments.length > 0 && isEditInstruction(prompt)) {
                 const editReply = await editAttachments(messageAttachments, prompt);

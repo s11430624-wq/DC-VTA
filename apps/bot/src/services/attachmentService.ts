@@ -77,6 +77,7 @@ const ATTACHMENT_MAX_FILES = Math.max(1, Number(process.env.ATTACHMENT_MAX_FILES
 const ATTACHMENT_MAX_BYTES = Math.max(1024, Number(process.env.ATTACHMENT_MAX_BYTES || 20 * 1024 * 1024));
 const ATTACHMENT_CHUNK_SIZE = Math.max(1500, Number(process.env.ATTACHMENT_CHUNK_SIZE || 6000));
 const ATTACHMENT_SUMMARY_TOKENS = Math.max(256, Number(process.env.ATTACHMENT_MAX_SUMMARY_TOKENS || 1400));
+const ATTACHMENT_CONTEXT_EXCERPT_CHARS = Math.max(1000, Number(process.env.ATTACHMENT_CONTEXT_EXCERPT_CHARS || 20000));
 const ATTACHMENT_PPTX_MAX_SLIDES = Math.max(1, Math.min(20, Number(process.env.ATTACHMENT_PPTX_MAX_SLIDES || 12)));
 const DOC_EDIT_MAX_FILES = Math.max(1, Number(process.env.DOC_EDIT_MAX_FILES || 3));
 const DOC_EDIT_MAX_CHARS = Math.max(2000, Number(process.env.DOC_EDIT_MAX_CHARS || 12000));
@@ -169,6 +170,55 @@ const getAttachmentType = (attachment: AttachmentInput): SupportedAttachmentType
     if (extension === 'pptx') return 'pptx';
     if (extension === 'docx') return 'docx';
     return 'unsupported';
+};
+
+const buildFocusTerms = (prompt = '') => {
+    const terms = new Set<string>();
+    const normalized = prompt.trim();
+    if (!normalized) {
+        return [] as string[];
+    }
+
+    for (const match of normalized.matchAll(/(?:table|表格|表)\s*\.?\s*(\d+)/gi)) {
+        const tableNumber = match[1];
+        if (!tableNumber) continue;
+        terms.add(`table ${tableNumber}`);
+        terms.add(`table${tableNumber}`);
+        terms.add(`表 ${tableNumber}`);
+        terms.add(`表格 ${tableNumber}`);
+        terms.add(`表${tableNumber}`);
+        terms.add(`表格${tableNumber}`);
+    }
+
+    for (const match of normalized.matchAll(/[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}/g)) {
+        const term = match[0]?.trim();
+        if (term && !/^(幫我|請問|解釋|整理|說明|一下|這個|那個)$/.test(term)) {
+            terms.add(term);
+        }
+    }
+
+    return [...terms].sort((left, right) => right.length - left.length);
+};
+
+const buildFocusedExcerpt = (text: string, prompt = '', maxChars = ATTACHMENT_CONTEXT_EXCERPT_CHARS) => {
+    const normalized = normalizeWhitespace(text);
+    if (normalized.length <= maxChars) {
+        return normalized;
+    }
+
+    const lowerText = normalized.toLowerCase();
+    const matchedIndex = buildFocusTerms(prompt)
+        .map((term) => lowerText.indexOf(term.toLowerCase()))
+        .filter((index) => index >= 0)
+        .sort((left, right) => left - right)[0];
+
+    const start = matchedIndex == null
+        ? 0
+        : Math.max(0, matchedIndex - Math.floor(maxChars * 0.25));
+    const end = Math.min(normalized.length, start + maxChars);
+    const prefix = start > 0 ? '...（前文略）\n' : '';
+    const suffix = end < normalized.length ? '\n...（後文略）' : '';
+    return `${prefix}${normalized.slice(start, end).trim()}${suffix}`;
 };
 
 export const isEditInstruction = (prompt: string) => /(修文|修改|改寫|改成|正式一點|報告口吻|潤稿|修正文法|重寫|精簡|順一下|rewrite|edit)/i.test(prompt);
@@ -640,13 +690,18 @@ export async function processAttachmentsForReading(attachments: AttachmentInput[
     return results;
 }
 
-export const formatAttachmentReadContext = (results: AttachmentAnalysis[]) => {
+export const formatAttachmentReadContext = (results: AttachmentAnalysis[], focusPrompt = '') => {
     const readable = results.filter((item) => item.status === 'ok');
     const others = results.filter((item) => item.status !== 'ok');
 
     const sections = [
         readable.length > 0
-            ? `附件內容摘要：\n${readable.map((item) => `檔名：${item.filename}\n格式：${item.fileType}\n摘要：${item.structuredSummary}`).join('\n\n')}`
+            ? `附件內容摘要：\n${readable.map((item) => [
+                `檔名：${item.filename}`,
+                `格式：${item.fileType}`,
+                `摘要：${item.structuredSummary}`,
+                `可查詢原文片段：\n${buildFocusedExcerpt(item.rawText, focusPrompt)}`,
+            ].join('\n')).join('\n\n')}`
             : '附件內容摘要：（無）',
     ];
 
@@ -754,6 +809,7 @@ export async function editAttachments(attachments: AttachmentInput[], instructio
 
 export const __attachmentServiceForTests = {
     chunkText,
+    buildFocusedExcerpt,
     extractPdfTextFromBuffer,
     getAttachmentType,
     isEditInstruction,
