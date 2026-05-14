@@ -16,6 +16,7 @@ type AskAgentInput = {
     isTeacher: boolean;
     channelId: string;
     chatMode?: boolean;
+    liveChannelContext?: string;
 };
 
 type DraftPreview = {
@@ -433,6 +434,8 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
 
     const prompt = [
         readMultilineEnv('AGENT_SYSTEM_PROMPT', DEFAULT_AGENT_SYSTEM_PROMPT),
+        '',
+        `頻道近期對話:\n${input.liveChannelContext?.trim() || '（無）'}`,
         '',
         `歷史對話:\n${memoryText || '（無）'}`,
         '',

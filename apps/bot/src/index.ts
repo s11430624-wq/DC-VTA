@@ -213,6 +213,34 @@ const rememberChannelEvent = async (channelId: string, userId: string, content: 
     });
 };
 
+const MAX_LIVE_CONTEXT_MESSAGES = Math.max(3, Math.min(20, Number(process.env.MENTION_CONTEXT_LIMIT || 20)));
+
+const buildLiveChannelContext = async (message: Message): Promise<string> => {
+    try {
+        const recent = await message.channel.messages.fetch({
+            before: message.id,
+            limit: MAX_LIVE_CONTEXT_MESSAGES,
+        });
+
+        const lines = [...recent.values()]
+            .filter((item) => !item.author.bot && !item.system)
+            .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+            .map((item) => {
+                const content = item.content.trim().replace(/\s+/g, ' ').slice(0, 240);
+                if (!content) {
+                    return '';
+                }
+                return `${item.author.username}: ${content}`;
+            })
+            .filter((line) => line.length > 0);
+
+        return lines.join('\n');
+    } catch (error) {
+        console.warn('⚠️ 無法讀取近期聊天室內容：', formatError(error));
+        return '';
+    }
+};
+
 type MentionIntentResult = {
     intent: 'image' | 'chat';
     prompt: string;
@@ -3282,6 +3310,7 @@ client.on('messageCreate', async (message) => {
 
         try {
             const sessionId = buildAgentSessionId(message.author.id, message.channelId);
+            const liveChannelContext = await buildLiveChannelContext(message);
             const result = await askAgent({
                 userId: message.author.id,
                 question: prompt,
@@ -3289,6 +3318,7 @@ client.on('messageCreate', async (message) => {
                 isTeacher: false,
                 channelId: message.guildId ?? message.channelId,
                 chatMode: true,
+                liveChannelContext,
             });
 
             let responseText = result.answer;
