@@ -30,7 +30,7 @@ type StructuredReplyInput = {
     caveat?: string | null;
 };
 
-const CAPABILITY_PATTERN = /(你會做什麼|你能做什麼|可以做什麼|有哪些功能|功能|help|指令)/i;
+const CAPABILITY_PATTERN = /(你會做什麼|你能做什麼|可以做什麼|有哪些功能|幫助|\/help|help|指令(列表|說明)?)/i;
 const BATCH_GENERATION_PATTERN = /(出.{0,4}[2-5]題|[2-5]題.*出題|批次出題|一次出.*題|多題題目)/i;
 const QUESTION_GENERATION_PATTERN = /(出題|生成.*題|產生.*題|題目草稿|出一題|幫我寫一題|簡答題|選擇題|單選題|四選一|問答題|申論題)/i;
 const POLL_PATTERN = /(投票|poll).*(建立|新增|做|產生|生成|create|add)|((建立|新增|做|產生|生成|create|add).*(投票|poll))/i;

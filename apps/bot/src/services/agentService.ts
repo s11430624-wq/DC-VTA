@@ -113,7 +113,7 @@ const extractFirstJsonObject = (raw: string) => {
 const regexFallbackIntents = (question: string): AgentIntentFlags => ({
     generation: /(出題|生成.*題|產生.*題|題目草稿|出一題|幫我寫一題|generate.*question|簡答題|選擇題|單選題|四選一)/i.test(question),
     batchGeneration: /(出.{0,4}[2-5]題|[2-5]題.*出題|批次出題|一次出.*題|多題題目)/i.test(question),
-    capability: /(你會做什麼|你能做什麼|可以做什麼|有哪些功能|功能|help|指令)/i.test(question),
+    capability: /(你會做什麼|你能做什麼|可以做什麼|有哪些功能|幫助|\/help|help|指令(列表|說明)?)/i.test(question),
     shortAnswer: /(簡答題|問答題|申論題|開放題|敘述題|short\s*answer)/i.test(question),
     multipleChoice: /(選擇題|單選題|四選一|四選一題|abc[dＤ]|multiple\s*choice)/i.test(question),
     surveyCreation: /(問卷|survey).*(建立|新增|出題|出|產生|生成|create|add)|((建立|新增|出題|出|產生|生成|create|add).*(問卷|survey))/i.test(question),
@@ -327,6 +327,7 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
     const revisionTarget = await getRevisionTarget(input.sessionId);
     const intents = await detectAgentIntents(input.question);
     const resolvedIntent = resolveAgentIntent(input.question, isTeacher);
+    const explicitCapabilityQuery = regexFallbackIntents(input.question).capability || resolvedIntent.intent === 'capability';
 
     if (!isTeacher) {
         const guard = shouldDenyStudentScope(input.question);
@@ -361,7 +362,7 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
         return { answer, pollDraftPreview: pollDraft };
     }
 
-    if (!isChatMode && (intents.capability || resolvedIntent.intent === 'capability')) {
+    if (!isChatMode && explicitCapabilityQuery) {
         const answer = buildCapabilityAnswer(isTeacher);
         await saveAssistantAnswer(input.sessionId, input.userId, answer);
         return { answer };
