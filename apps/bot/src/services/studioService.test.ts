@@ -100,3 +100,19 @@ test('summarize prompt avoids fixed meeting template for attachment summaries', 
     assert.doesNotMatch(prompt, /待辦事項/);
     assert.doesNotMatch(prompt, /未解問題/);
 });
+
+test('studio memory entries preserve agent prompt and answer for follow-up ask', () => {
+    const entries = __studioServiceForTests.buildStudioMemoryEntries({
+        action: 'summarize_channel',
+        prompt: '請解釋表2',
+        attachmentHeader: '已讀附件：paper.pdf',
+        response: '表2顯示課程為 16 週。',
+    });
+
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0]?.role, 'user');
+    assert.match(entries[0]?.content ?? '', /請解釋表2/);
+    assert.match(entries[0]?.content ?? '', /paper\.pdf/);
+    assert.equal(entries[1]?.role, 'assistant');
+    assert.match(entries[1]?.content ?? '', /16 週/);
+});

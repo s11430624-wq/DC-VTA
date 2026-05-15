@@ -40,9 +40,17 @@ type ResearchEvidencePack = {
     supportingSources: ResearchSource[];
 };
 
+type StudioMemoryEntryInput = {
+    action: StudioAction;
+    prompt?: string | undefined;
+    attachmentHeader?: string | undefined;
+    response: string;
+};
+
 const DEFAULT_SUMMARIZE_MODEL = () => process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview';
 const RESEARCH_MODEL = 'gemini-3.1-pro-preview';
 const RESEARCH_MAX_RESULTS = Math.max(3, Math.min(10, Number(process.env.RESEARCH_MAX_RESULTS || 8)));
+const STUDIO_MEMORY_MAX_CHARS = Math.max(1000, Number(process.env.STUDIO_MEMORY_MAX_CHARS || 12000));
 
 const OFFICIAL_HOST_PATTERNS = [
     /(^|\.)google\.com$/i,
@@ -70,6 +78,31 @@ const REFERENCE_HOST_PATTERNS = [
 const ensureNonEmptyReply = (text: string, fallback: string) => {
     const normalized = text.trim();
     return normalized.length > 0 ? normalized : fallback;
+};
+
+const truncateForStudioMemory = (text: string) => (
+    text.length > STUDIO_MEMORY_MAX_CHARS
+        ? `${text.slice(0, STUDIO_MEMORY_MAX_CHARS).trim()}\n...（內容過長，已截斷寫入記憶）`
+        : text
+);
+
+export const buildStudioMemoryEntries = (input: StudioMemoryEntryInput) => {
+    const userContent = [
+        `【/agent ${input.action}】`,
+        input.prompt?.trim() ? `使用者要求：${input.prompt.trim()}` : '使用者要求：（未提供）',
+        input.attachmentHeader?.trim() ? `附件狀態：\n${input.attachmentHeader.trim()}` : '',
+    ].filter((line) => line.trim().length > 0).join('\n');
+
+    return [
+        {
+            role: 'user' as const,
+            content: truncateForStudioMemory(userContent),
+        },
+        {
+            role: 'assistant' as const,
+            content: truncateForStudioMemory(`【/agent 回答】\n${input.response.trim()}`),
+        },
+    ];
 };
 
 const slugifyReportName = (input: string) => {
@@ -263,6 +296,7 @@ const buildSummarizeChannelPrompt = (input: {
 export const __studioServiceForTests = {
     ensureNonEmptyReply,
     buildSummarizeChannelPrompt,
+    buildStudioMemoryEntries,
     buildResearchFallbackSummary,
     slugifyReportName,
     sortSources,

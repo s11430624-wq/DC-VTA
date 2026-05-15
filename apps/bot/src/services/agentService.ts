@@ -52,6 +52,43 @@ export type AskAgentResult = {
 };
 
 export const buildAgentSessionId = (_userId: string, channelId: string) => `channel:${channelId}`;
+export type MemoryScopeType = 'PERSONAL' | 'MENTION_PERSONAL';
+export type MemoryRoutingResult = {
+    scopeType: MemoryScopeType;
+    sessionKey: string;
+};
+
+const readMemoryScope = (rawValue: string | undefined, fallback: MemoryScopeType): MemoryScopeType => {
+    if (rawValue === 'PERSONAL' || rawValue === 'MENTION_PERSONAL') {
+        return rawValue;
+    }
+    return fallback;
+};
+
+const getDefaultMemoryScope = () => readMemoryScope(process.env.MEMORY_DEFAULT_SCOPE, 'PERSONAL');
+const getMentionMemoryScope = () => readMemoryScope(process.env.MEMORY_MENTION_SCOPE, 'MENTION_PERSONAL');
+
+export const detectMentionMode = (hasMention: boolean): boolean => hasMention;
+
+const buildPersonalSessionKey = (userId: string, guildId?: string | null) => (guildId ? `${guildId}:${userId}` : userId);
+const buildMentionPersonalSessionKey = (userId: string, guildId?: string | null) => (guildId ? `${guildId}:${userId}:mention` : `${userId}:mention`);
+
+const buildMemorySessionKey = (scopeType: MemoryScopeType, userId: string, guildId?: string | null) => (
+    scopeType === 'MENTION_PERSONAL'
+        ? buildMentionPersonalSessionKey(userId, guildId)
+        : buildPersonalSessionKey(userId, guildId)
+);
+
+export const resolveMemoryRouting = (
+    userId: string,
+    guildId: string | null | undefined,
+    hasMention: boolean,
+): MemoryRoutingResult => {
+    const mentionMode = detectMentionMode(hasMention);
+    const scopeType = mentionMode ? getMentionMemoryScope() : getDefaultMemoryScope();
+    const sessionKey = buildMemorySessionKey(scopeType, userId, guildId);
+    return { scopeType, sessionKey };
+};
 
 const getAgentModel = () => process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview';
 const DEFAULT_AGENT_SYSTEM_PROMPT = [

@@ -27,7 +27,7 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { approveQuestionDraft, clearDraftsByUser, getDraftById } from './services/aiQuestionService';
-import { askAgent, buildAgentSessionId } from './services/agentService';
+import { askAgent, buildAgentSessionId, resolveMemoryRouting } from './services/agentService';
 import { clearAgentMessages } from './services/agentMemoryService';
 import {
     editAttachments,
@@ -56,7 +56,7 @@ import { ensureDiscordChannelGroup, ensureGroupMember, setCurrentQuestionForGrou
 import { generateImageFromPrompt } from './services/imageService';
 import { generateModelText } from './services/llmService';
 import { createMultipleChoiceQuestion, createShortAnswerQuestion, createSurveyQuestion, getQuestionById, getRecentQuestions } from './services/questionService';
-import { runStudioTask } from './services/studioService';
+import { buildStudioMemoryEntries, runStudioTask } from './services/studioService';
 import {
     getExistingResponse,
     getAllQuizResponses,
@@ -247,6 +247,20 @@ const rememberChannelEvent = async (channelId: string, userId: string, content: 
         role,
         content,
     });
+};
+
+const rememberStudioTaskInteraction = async (
+    sessionIds: string[],
+    userId: string,
+    entries: Array<{ role: 'user' | 'assistant'; content: string }>,
+) => {
+    const uniqueSessionIds = [...new Set(sessionIds.filter((sessionId) => sessionId.trim().length > 0))];
+    await Promise.all(uniqueSessionIds.flatMap((sessionId) => entries.map((entry) => appendChatMessage({
+        session_id: sessionId,
+        user_id: userId,
+        role: entry.role,
+        content: entry.content,
+    }))));
 };
 
 const MAX_LIVE_CONTEXT_MESSAGES = Math.max(3, Math.min(20, Number(process.env.MENTION_CONTEXT_LIMIT || 20)));
@@ -1739,6 +1753,10 @@ const pendingShortAnswerDrafts = new Map<string, PendingShortAnswerDraft>();
 const pendingPollDrafts = new Map<string, PendingPollDraft>();
 
 const buildShortDraftSessionKey = (userId: string, channelId: string | null) => `${userId}:${channelId ?? 'dm'}`;
+const resolveAskSessionIdFromInteraction = (interaction: ChatInputCommandInteraction) =>
+    resolveMemoryRouting(interaction.user.id, interaction.guildId, false);
+const resolveMentionSessionIdFromMessage = (message: Message, hasMention: boolean) =>
+    resolveMemoryRouting(message.author.id, message.guildId, hasMention);
 const isShortDraftRevisionPrompt = (prompt: string) => /(修改|調整|改成|改為|重寫|優化|rubric|評分|難度|語氣|精簡|補充)/i.test(prompt);
 const isPollDraftRevisionPrompt = (prompt: string) => /(修改|調整|改成|改為|重寫|選項|複選|期限|時長|小時|精簡|補充)/i.test(prompt);
 
@@ -2056,7 +2074,8 @@ const handleDraftButton = async (interaction: ButtonInteraction) => {
                 interaction.user.id,
                 getGuildCategoryName(interaction.guild, interaction.guildId),
             );
-            await clearRevisionTarget(buildAgentSessionId(interaction.user.id, interaction.channelId));
+            const askRouting = resolveMemoryRouting(interaction.user.id, interaction.guildId, false);
+            await clearRevisionTarget(askRouting.sessionKey);
             await safeReply(
                 interaction,
                 `✅ 題目已建立。\nID：${question.id}\n題目：${question.content ?? '（無題目內容）'}\n接著可用 /open id:${question.id} 發題。`,
@@ -2077,8 +2096,9 @@ const handleDraftButton = async (interaction: ButtonInteraction) => {
                 return;
             }
 
+            const askRouting = resolveMemoryRouting(interaction.user.id, interaction.guildId, false);
             await setRevisionTarget(
-                buildAgentSessionId(interaction.user.id, interaction.channelId),
+                askRouting.sessionKey,
                 interaction.user.id,
                 draftId,
             );
@@ -2697,6 +2717,7 @@ client.on('interactionCreate', async (interaction) => {
             const action = chatInteraction.options.getString('action', true) as 'summarize_channel' | 'research';
             const prompt = chatInteraction.options.getString('prompt')?.trim();
             const channelSessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
+            const askRouting = resolveAskSessionIdFromInteraction(chatInteraction);
             const attachments = collectCommandAttachments(chatInteraction, ['attachment_1', 'attachment_2', 'attachment_3']);
             const attachmentResults = attachments.length > 0 ? await processAttachmentsForReading(attachments) : [];
             const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults, prompt ?? '') : '';
@@ -2718,6 +2739,20 @@ client.on('interactionCreate', async (interaction) => {
                 });
             } else {
                 await chatInteraction.editReply(content);
+            }
+            try {
+                await rememberStudioTaskInteraction(
+                    [channelSessionId, askRouting.sessionKey],
+                    chatInteraction.user.id,
+                    buildStudioMemoryEntries({
+                        action,
+                        ...(prompt ? { prompt } : {}),
+                        ...(header ? { attachmentHeader: header } : {}),
+                        response: content,
+                    }),
+                );
+            } catch (memoryError) {
+                console.warn('⚠️ /agent 記憶寫入失敗：', formatError(memoryError));
             }
             return;
         }
@@ -3138,23 +3173,31 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (chatInteraction.commandName === 'clear_memory') {
-            const sessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
-            await clearAgentMessages(sessionId);
-            await clearChatMessages(sessionId);
-            await clearRevisionTarget(sessionId);
+            const channelSessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
+            const askRouting = resolveAskSessionIdFromInteraction(chatInteraction);
+            const mentionRouting = resolveMemoryRouting(chatInteraction.user.id, chatInteraction.guildId, true);
+            await clearAgentMessages(channelSessionId);
+            await clearChatMessages(channelSessionId);
+            await clearRevisionTarget(channelSessionId);
+            await clearAgentMessages(askRouting.sessionKey);
+            await clearChatMessages(askRouting.sessionKey);
+            await clearRevisionTarget(askRouting.sessionKey);
+            await clearAgentMessages(mentionRouting.sessionKey);
+            await clearChatMessages(mentionRouting.sessionKey);
+            await clearRevisionTarget(mentionRouting.sessionKey);
             await clearDraftsByUser(chatInteraction.user.id);
             await clearBatchDraftsByUser(chatInteraction.user.id);
             pendingShortAnswerDrafts.delete(buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId));
             pendingPollDrafts.delete(buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId));
-            await safeReply(chatInteraction, '✅ 已清除目前頻道的共享 Agent 記憶、上下文壓縮摘要，以及你個人的未確認題目草稿。', true);
+            await safeReply(chatInteraction, '✅ 已清除目前頻道記憶、你的 /ask 個人記憶、@提及記憶，以及你個人的未確認題目草稿。', true);
             return;
         }
 
         if (chatInteraction.commandName === 'context') {
             if (!(await requireTeacher(chatInteraction))) return;
 
-            const sessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
-            await safeReply(chatInteraction, await buildContextStatus(sessionId), true);
+            const askRouting = resolveAskSessionIdFromInteraction(chatInteraction);
+            await safeReply(chatInteraction, await buildContextStatus(askRouting.sessionKey), true);
             return;
         }
 
@@ -3182,7 +3225,9 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            const sessionId = buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId);
+            const askRouting = resolveAskSessionIdFromInteraction(chatInteraction);
+            const sessionId = askRouting.sessionKey;
+            console.debug(`[memory-routing] scope=${askRouting.scopeType} session=${sessionId} source=/ask`);
             const shortDraftSessionKey = buildShortDraftSessionKey(chatInteraction.user.id, chatInteraction.channelId);
             const pendingShortDraft = pendingShortAnswerDrafts.get(shortDraftSessionKey);
             const pendingPollDraft = pendingPollDrafts.get(shortDraftSessionKey);
@@ -3335,7 +3380,7 @@ client.on('interactionCreate', async (interaction) => {
                         chatInteraction.user.id,
                         getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
                     );
-                    await clearRevisionTarget(buildAgentSessionId(chatInteraction.user.id, chatInteraction.channelId));
+                    await clearRevisionTarget(sessionId);
                     await safeReply(
                         chatInteraction,
                         compressionPrefix + [
@@ -3541,7 +3586,9 @@ client.on('messageCreate', async (message) => {
         }
 
         try {
-            const sessionId = buildAgentSessionId(message.author.id, message.channelId);
+            const mentionRouting = resolveMentionSessionIdFromMessage(message, isMentioned);
+            const sessionId = mentionRouting.sessionKey;
+            console.debug(`[memory-routing] scope=${mentionRouting.scopeType} session=${sessionId} source=mention`);
             const liveChannelContext = await buildLiveChannelContext(message);
             const attachmentResults = messageAttachments.length > 0 ? await processAttachmentsForReading(messageAttachments) : [];
             const attachmentContext = attachmentResults.length > 0 ? formatAttachmentReadContext(attachmentResults, prompt) : '';
