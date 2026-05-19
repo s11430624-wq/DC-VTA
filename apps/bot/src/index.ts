@@ -168,6 +168,7 @@ const SUPPORTED_MODELS = [
     'gemini-2.5-flash',
     'gemini-2.5-pro',
     'gemini-3-flash-preview',
+    'gemini-3.5-flash',
     'gemini-3.1-flash-lite-preview',
     'gemini-3.1-pro-preview',
 ] as const;
@@ -177,6 +178,7 @@ const DEFAULT_LOCATION_BY_MODEL: Record<SupportedModel, string> = {
     'gemini-2.5-flash': 'us-central1',
     'gemini-2.5-pro': 'us-central1',
     'gemini-3-flash-preview': 'global',
+    'gemini-3.5-flash': 'global',
     'gemini-3.1-flash-lite-preview': 'global',
     'gemini-3.1-pro-preview': 'global',
 };

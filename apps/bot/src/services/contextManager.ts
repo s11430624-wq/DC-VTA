@@ -115,7 +115,7 @@ export async function prepareContext(input: {
     attachmentContext?: string;
     researchContext?: string;
 }): Promise<PreparedContext> {
-    const memory = (await getRecentChatMessages(input.sessionId, input.memoryLimit ?? 8)).filter((message) => !isContextSummaryMessage(message));
+    const memory = (await getRecentChatMessages(input.sessionId, input.memoryLimit ?? 24)).filter((message) => !isContextSummaryMessage(message));
     const latestSummary = await getLatestContextSummary(input.sessionId);
     const summaryText = latestSummary ? stripContextSummaryPrefix(latestSummary.content) : '';
     const sources: ContextSource[] = [

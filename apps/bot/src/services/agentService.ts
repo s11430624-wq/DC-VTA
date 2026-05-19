@@ -468,7 +468,7 @@ export async function askAgent(input: AskAgentInput): Promise<AskAgentResult> {
     const preparedContext = await prepareContext({
         sessionId: input.sessionId,
         userId: input.userId,
-        memoryLimit: 8,
+        memoryLimit: 24,
         ...(input.liveChannelContext ? { liveChannelContext: input.liveChannelContext } : {}),
         ...(input.attachmentContext ? { attachmentContext: input.attachmentContext } : {}),
     });
