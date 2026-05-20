@@ -22,7 +22,8 @@ const formData = ref({
   correct: 'A',
   category: '',
   explanation: '',
-  rubric: ''
+  rubric: '',
+  imageUrl: ''
 })
 
 const loading = ref(false)
@@ -34,6 +35,19 @@ const isEditMode = computed(() => !!props.question)
 
 // 是否為選擇題
 const isMultipleChoice = computed(() => formData.value.type === 'multiple_choice')
+
+function parseQuestionMetadata(metadata) {
+  if (!metadata) return {}
+  if (typeof metadata === 'string') {
+    try {
+      const parsed = JSON.parse(metadata)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  return metadata
+}
 
 onMounted(async () => {
   try {
@@ -56,6 +70,7 @@ watch(() => props.question, (newQuestion) => {
     formData.value.category = newQuestion.category || ''
     formData.value.explanation = newQuestion.explanation || ''
     formData.value.rubric = newQuestion.rubric || ''
+    formData.value.imageUrl = ''
 
     // 判斷題型：如果有 rubric 且不為空，設為簡答題
     if (newQuestion.rubric && newQuestion.rubric.trim() !== '') {
@@ -65,7 +80,7 @@ watch(() => props.question, (newQuestion) => {
     }
 
     if (newQuestion.metadata) {
-      const meta = newQuestion.metadata
+      const meta = parseQuestionMetadata(newQuestion.metadata)
       if (meta.options && meta.options.length >= 4) {
         formData.value.optionA = meta.options[0] || ''
         formData.value.optionB = meta.options[1] || ''
@@ -73,6 +88,7 @@ watch(() => props.question, (newQuestion) => {
         formData.value.optionD = meta.options[3] || ''
       }
       formData.value.correct = meta.correct_answer || 'A'
+      formData.value.imageUrl = meta.image_url || ''
     }
   } else {
     // 重置表單（新增模式）
@@ -86,7 +102,8 @@ watch(() => props.question, (newQuestion) => {
       correct: 'A',
       category: '',
       explanation: '',
-      rubric: ''
+      rubric: '',
+      imageUrl: ''
     }
   }
   error.value = ''
@@ -126,9 +143,12 @@ async function handleSubmit() {
       ],
       correct_answer: formData.value.correct
     }
+    if (formData.value.imageUrl.trim()) {
+      metadataObj.image_url = formData.value.imageUrl.trim()
+    }
     rubricValue = null
   } else {
-    metadataObj = {}
+    metadataObj = formData.value.imageUrl.trim() ? { image_url: formData.value.imageUrl.trim() } : {}
     rubricValue = formData.value.rubric
   }
 
@@ -177,7 +197,8 @@ async function handleSubmit() {
         correct: 'A',
         category: '',
         explanation: '',
-        rubric: ''
+        rubric: '',
+        imageUrl: ''
       }
     }
   } catch (err) {
@@ -257,6 +278,20 @@ function handleCancel() {
           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition resize-none"
           :disabled="loading"
         />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          題目圖片 URL (選填)
+        </label>
+        <input
+          v-model="formData.imageUrl"
+          type="url"
+          placeholder="https://..."
+          class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition"
+          :disabled="loading"
+        />
+        <p class="mt-1 text-xs text-gray-400">Discord 上傳圖片建立的題目會自動帶入；網頁端可貼圖片網址。</p>
       </div>
 
       <!-- ========== 選擇題區塊 ========== -->

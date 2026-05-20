@@ -33,6 +33,20 @@ const leaderboardFeedRef = ref(null)
 const leaderboardRankRef = ref(null)
 const gradingRef = ref(null)
 
+function getQuestionImageUrl(question) {
+  const metadata = question?.metadata
+  const parsed = typeof metadata === 'string' ? (() => {
+    try {
+      const value = JSON.parse(metadata)
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+    } catch {
+      return null
+    }
+  })() : metadata
+  const imageUrl = parsed?.image_url
+  return typeof imageUrl === 'string' && /^https?:\/\//i.test(imageUrl) ? imageUrl : ''
+}
+
 const filteredAndSortedQuestions = computed(() => {
   let filtered = [...questions.value]
   if (searchQuery.value.trim()) {
@@ -211,6 +225,12 @@ defineExpose({ fetchQuestions })
                 <span v-else class="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded font-medium">簡答題</span>
               </div>
               <p class="text-gray-800 mb-2">{{ q.content || '（無題目描述，僅提供選項）' }}</p>
+              <img
+                v-if="getQuestionImageUrl(q)"
+                :src="getQuestionImageUrl(q)"
+                alt="題目圖片"
+                class="mb-3 max-h-48 rounded-lg border border-gray-200 object-contain"
+              />
               <div class="flex flex-wrap gap-2 mb-2">
                 <span v-for="(option, index) in q.metadata?.options || []" :key="index" class="text-sm px-2 py-1 rounded" :class="String.fromCharCode(65 + index) === q.metadata?.correct_answer ? 'bg-green-100 text-green-700 font-semibold' : 'bg-gray-100 text-gray-600'">{{ String.fromCharCode(65 + index) }}: {{ option }}</span>
               </div>

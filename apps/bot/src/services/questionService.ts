@@ -17,12 +17,14 @@ type CreateMultipleChoiceQuestionInput = {
     options: string[];
     correctAnswer: 'A' | 'B' | 'C' | 'D';
     explanation?: string;
+    imageUrl?: string | null;
 };
 
 type CreateShortAnswerQuestionInput = {
     content: string;
     category?: string;
     rubric: string;
+    imageUrl?: string | null;
 };
 
 type CreateSurveyQuestionInput = {
@@ -34,6 +36,48 @@ type CreateSurveyQuestionInput = {
 const isMissingRubricColumn = (error: { message?: string; code?: string }) => {
     const message = error.message?.toLowerCase() ?? '';
     return error.code === 'PGRST204' || message.includes('rubric');
+};
+
+const normalizeImageUrl = (imageUrl?: string | null) => {
+    const trimmed = imageUrl?.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(trimmed);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : null;
+    } catch {
+        return null;
+    }
+};
+
+const withQuestionImageMetadata = (
+    metadata: Record<string, unknown>,
+    imageUrl?: string | null,
+): Record<string, unknown> => {
+    const normalized = normalizeImageUrl(imageUrl);
+    return normalized ? { ...metadata, image_url: normalized } : metadata;
+};
+
+export const getQuestionImageUrl = (metadata: Record<string, unknown> | string | null | undefined) => {
+    if (!metadata) {
+        return null;
+    }
+
+    const parsed = typeof metadata === 'string' ? (() => {
+        try {
+            const value = JSON.parse(metadata) as unknown;
+            return value && typeof value === 'object' && !Array.isArray(value)
+                ? value as Record<string, unknown>
+                : null;
+        } catch {
+            return null;
+        }
+    })() : metadata;
+
+    const value = parsed?.image_url;
+    return typeof value === 'string' ? normalizeImageUrl(value) : null;
 };
 
 export async function getRecentQuestions(limit = 10): Promise<QuestionRecord[]> {
@@ -97,11 +141,11 @@ export async function createMultipleChoiceQuestion(input: CreateMultipleChoiceQu
         category: input.category ?? '一般',
         question_type: 'multiple_choice',
         explanation: input.explanation ?? '',
-        metadata: {
+        metadata: withQuestionImageMetadata({
             options: input.options,
             correct_answer: input.correctAnswer,
             explanation: input.explanation ?? '',
-        },
+        }, input.imageUrl),
         rubric: null,
     };
 
@@ -142,9 +186,9 @@ export async function createShortAnswerQuestion(input: CreateShortAnswerQuestion
         category: input.category ?? '一般',
         question_type: 'short_answer',
         explanation: null,
-        metadata: {
+        metadata: withQuestionImageMetadata({
             rubric: input.rubric,
-        },
+        }, input.imageUrl),
         rubric: input.rubric,
     };
 
@@ -178,6 +222,11 @@ export async function createShortAnswerQuestion(input: CreateShortAnswerQuestion
 
     return result.data as QuestionRecord;
 }
+
+export const __questionServiceForTests = {
+    getQuestionImageUrl,
+    withQuestionImageMetadata,
+};
 
 export async function createSurveyQuestion(input: CreateSurveyQuestionInput): Promise<QuestionRecord> {
     const payload = {

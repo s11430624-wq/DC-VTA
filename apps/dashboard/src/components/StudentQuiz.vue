@@ -29,6 +29,9 @@ const questionId = ref(null)
 /** 題目內容（從 Supabase 取得） */
 const questionContent = ref('')
 
+/** 題目圖片 URL（選填） */
+const questionImageUrl = ref('')
+
 /** 題目最後發送時間（用於計算反應時間） */
 const questionLastSentAt = ref(null)
 
@@ -161,10 +164,23 @@ onMounted(async () => {
 /**
  * 從 question_bank 表撈取對應題號的題目內容
  */
+function getQuestionImageUrl(metadata) {
+  const parsed = typeof metadata === 'string' ? (() => {
+    try {
+      const value = JSON.parse(metadata)
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+    } catch {
+      return null
+    }
+  })() : metadata
+  const imageUrl = parsed?.image_url
+  return typeof imageUrl === 'string' && /^https?:\/\//i.test(imageUrl) ? imageUrl : ''
+}
+
 async function fetchQuestion(qid) {
   const { data, error } = await supabase
     .from('question_bank')
-    .select('id, content, question_text, last_sent_at')
+    .select('id, content, question_text, metadata, last_sent_at')
     .eq('id', qid)
     .single()
 
@@ -174,6 +190,7 @@ async function fetchQuestion(qid) {
 
   // 優先使用 question_text，若無則使用 content
   questionContent.value = data.question_text || data.content || '（題目內容為空）'
+  questionImageUrl.value = getQuestionImageUrl(data.metadata)
   questionLastSentAt.value = data.last_sent_at || null
 }
 
@@ -355,6 +372,12 @@ async function submitAnswer() {
           <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">
             {{ questionContent }}
           </p>
+          <img
+            v-if="questionImageUrl"
+            :src="questionImageUrl"
+            alt="題目圖片"
+            class="mt-4 max-h-80 rounded-lg border border-gray-200 object-contain"
+          />
         </section>
 
         <!-- ── 作答區塊 ── -->

@@ -55,7 +55,7 @@ import { getCommandAuditChannelIdForGuild, getTeacherLogChannelIdForGuild, upser
 import { ensureDiscordChannelGroup, ensureGroupMember, setCurrentQuestionForGroup } from './services/groupService';
 import { generateImageFromPrompt } from './services/imageService';
 import { generateModelText } from './services/llmService';
-import { createMultipleChoiceQuestion, createShortAnswerQuestion, createSurveyQuestion, getQuestionById, getRecentQuestions } from './services/questionService';
+import { createMultipleChoiceQuestion, createShortAnswerQuestion, createSurveyQuestion, getQuestionById, getQuestionImageUrl, getRecentQuestions } from './services/questionService';
 import { buildStudioMemoryEntries, runStudioTask } from './services/studioService';
 import {
     getExistingResponse,
@@ -673,6 +673,12 @@ const commands = [
                 type: ApplicationCommandOptionType.String,
                 required: false,
             },
+            {
+                name: 'image',
+                description: '題目圖片（選填）',
+                type: ApplicationCommandOptionType.Attachment,
+                required: false,
+            },
         ],
     },
     {
@@ -691,6 +697,12 @@ const commands = [
                 description: '評分規準或參考答案',
                 type: ApplicationCommandOptionType.String,
                 required: true,
+            },
+            {
+                name: 'image',
+                description: '題目圖片（選填）',
+                type: ApplicationCommandOptionType.Attachment,
+                required: false,
             },
         ],
     },
@@ -880,6 +892,21 @@ const getStringMetadata = (metadata: QuestionMetadata | null, key: string) => {
     return typeof value === 'string' && value.trim().length > 0 ? value : null;
 };
 
+const hasImageExtension = (url: string) => /\.(?:png|jpe?g|gif|webp)(?:\?.*)?$/i.test(url);
+
+const getQuestionImageAttachmentUrl = (interaction: ChatInputCommandInteraction) => {
+    const attachment = interaction.options.getAttachment('image');
+    if (!attachment) {
+        return { ok: true as const, imageUrl: null };
+    }
+
+    if (attachment.contentType?.startsWith('image/') || hasImageExtension(attachment.url)) {
+        return { ok: true as const, imageUrl: attachment.url };
+    }
+
+    return { ok: false as const, error: '圖片欄位只接受圖片附件（PNG、JPG、GIF 或 WEBP）。' };
+};
+
 const getBooleanMetadata = (metadata: QuestionMetadata | null, key: string, fallback = false) => {
     const value = metadata?.[key];
     if (typeof value === 'boolean') return value;
@@ -970,6 +997,10 @@ const formatQuestionDetail = (question: QuestionDetail) => {
         question.content ?? '（無題目內容）',
         '',
     ];
+    const imageUrl = getQuestionImageUrl(parsedMetadata.metadata);
+    if (imageUrl) {
+        lines.push('🖼️ 題目圖片：', imageUrl, '');
+    }
 
     if (questionType === 'multiple_choice') {
         lines.push(
@@ -1771,6 +1802,96 @@ const buildShortAnswerButtonCustomId = (questionId: number, openedAtMs: number, 
 const buildShortAnswerModalCustomId = (questionId: number, openedAtMs: number, durationSeconds: number) =>
     `short_modal:qid=${questionId}:open=${openedAtMs}:dur=${durationSeconds}`;
 
+const buildAnswerCounterCustomId = (questionId: number, openedAtMs: number) =>
+    `answer_count:qid=${questionId}:open=${openedAtMs}`;
+
+const buildOpenQuestionKey = (questionId: number, openedAtMs: number | null) => {
+    if (!openedAtMs) return null;
+    return `${questionId}:${openedAtMs}`;
+};
+
+type OpenQuestionMessageRef = {
+    channelId: string;
+    messageId: string;
+};
+
+const openQuestionMessageRefs = new Map<string, OpenQuestionMessageRef>();
+
+const buildAnswerCounterRow = (questionId: number, openedAtMs: number, answeredCount: number) =>
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+            .setCustomId(buildAnswerCounterCustomId(questionId, openedAtMs))
+            .setLabel(`✅ ${Math.max(0, answeredCount)}`)
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(true),
+    );
+
+const incrementAnswerCounterOnMessage = async (message: Message, questionId: number, openedAtMs: number | null) => {
+    if (!openedAtMs) return;
+
+    const countCustomId = buildAnswerCounterCustomId(questionId, openedAtMs);
+    const rows = message.components.map((row) => row.toJSON() as {
+        type: number;
+        components?: Array<{ type: number; custom_id?: string; label?: string }>;
+    });
+    let hasCounterButton = false;
+
+    for (const row of rows) {
+        if (!Array.isArray(row.components)) continue;
+        for (const component of row.components) {
+            if (component.type !== 2 || component.custom_id !== countCustomId) continue;
+            const currentLabel = component.label ?? '✅ 0';
+            const currentCountMatch = currentLabel.match(/(\d+)$/);
+            const currentCount = currentCountMatch ? Number(currentCountMatch[1]) : 0;
+            component.label = `✅ ${currentCount + 1}`;
+            hasCounterButton = true;
+        }
+    }
+
+    if (!hasCounterButton) {
+        rows.push(buildAnswerCounterRow(questionId, openedAtMs, 1).toJSON() as { type: number; components?: Array<{ type: number; custom_id?: string; label?: string }> });
+    }
+
+    await message.edit({ components: rows });
+};
+
+const incrementAnswerCounter = async (params: {
+    channelId: string | null;
+    questionId: number;
+    openedAtMs: number | null;
+    interactionMessage?: Message<boolean>;
+}) => {
+    const { channelId, questionId, openedAtMs, interactionMessage } = params;
+    const openKey = buildOpenQuestionKey(questionId, openedAtMs);
+    if (!openKey) return;
+
+    try {
+        if (interactionMessage) {
+            await incrementAnswerCounterOnMessage(interactionMessage, questionId, openedAtMs);
+            openQuestionMessageRefs.set(openKey, {
+                channelId: interactionMessage.channelId,
+                messageId: interactionMessage.id,
+            });
+            return;
+        }
+
+        const messageRef = openQuestionMessageRefs.get(openKey);
+        const resolvedChannelId = messageRef?.channelId ?? channelId;
+        if (!resolvedChannelId) return;
+
+        const channel = await client.channels.fetch(resolvedChannelId);
+        if (!channel || !channel.isTextBased() || !('messages' in channel)) return;
+
+        const targetMessageId = messageRef?.messageId;
+        if (!targetMessageId) return;
+
+        const targetMessage = await channel.messages.fetch(targetMessageId);
+        await incrementAnswerCounterOnMessage(targetMessage, questionId, openedAtMs);
+    } catch (error) {
+        console.warn('⚠️ 更新作答計數失敗：', formatError(error));
+    }
+};
+
 const parseShortAnswerCustomId = (customId: string) => {
     const match = /^short:qid=(\d+)(?::open=(\d{13}))?(?::dur=(\d+))?$/.exec(customId);
     if (!match) {
@@ -2003,6 +2124,12 @@ const handleAnswerButton = async (interaction: ButtonInteraction) => {
         selected_option: selectedOption,
         is_correct: isCorrect,
         reaction_time: calculateReactionTimeSeconds(parsedCustomId.openedAtMs),
+    });
+    await incrementAnswerCounter({
+        channelId: interaction.channelId,
+        questionId: question.id,
+        openedAtMs: parsedCustomId.openedAtMs,
+        interactionMessage: interaction.message,
     });
     const stats = await getUserQuizStats(interaction.user.id);
     const explanation = getQuestionExplanation(question.metadata);
@@ -2587,6 +2714,11 @@ client.on('interactionCreate', async (interaction) => {
             };
 
             await upsertQuizResponse(responsePayload);
+            await incrementAnswerCounter({
+                channelId: interaction.channelId,
+                questionId,
+                openedAtMs: parsedCustomId.openedAtMs,
+            });
 
             await safeReply(
                 interaction,
@@ -2633,8 +2765,8 @@ client.on('interactionCreate', async (interaction) => {
                 '`/edit_doc instruction [attachment_1..3]` - 讀取文字文件並提供修訂清單與修正版',
                 '`/list` - 顯示最近 10 筆題庫',
                 '`/question id` - 查看題目詳情',
-                '`/add content option_a option_b option_c option_d correct [explanation]` - 老師新增選擇題',
-                '`/add_short content rubric` - 老師新增短答題',
+                '`/add content option_a option_b option_c option_d correct [explanation] [image]` - 老師新增選擇題，可附題目圖片',
+                '`/add_short content rubric [image]` - 老師新增短答題，可附題目圖片',
                 '`/add_survey content [allow_repeat_answer]` - 老師新增問卷題（可設定是否允許重複作答）',
                 '`/open id [duration_minutes]` - 老師開放題目',
                 '`/check id` - 老師查看答題統計',
@@ -2971,6 +3103,11 @@ client.on('interactionCreate', async (interaction) => {
             const optionD = chatInteraction.options.getString('option_d', true);
             const correct = chatInteraction.options.getString('correct', true).toUpperCase() as 'A' | 'B' | 'C' | 'D';
             const explanation = chatInteraction.options.getString('explanation') ?? '';
+            const image = getQuestionImageAttachmentUrl(chatInteraction);
+            if (!image.ok) {
+                await safeReply(chatInteraction, image.error, true);
+                return;
+            }
 
             const question = await createMultipleChoiceQuestion({
                 content,
@@ -2978,11 +3115,12 @@ client.on('interactionCreate', async (interaction) => {
                 options: [optionA, optionB, optionC, optionD],
                 correctAnswer: correct,
                 explanation,
+                imageUrl: image.imageUrl,
             });
 
             await safeReply(
                 chatInteraction,
-                `✅ 題目新增成功！\nID：${question.id}\n題目：${question.content ?? content}`,
+                `✅ 題目新增成功！\nID：${question.id}\n題目：${question.content ?? content}${image.imageUrl ? '\n圖片：已加入' : ''}`,
                 true,
             );
             return;
@@ -2993,15 +3131,22 @@ client.on('interactionCreate', async (interaction) => {
 
             const content = chatInteraction.options.getString('content', true);
             const rubric = chatInteraction.options.getString('rubric', true);
+            const image = getQuestionImageAttachmentUrl(chatInteraction);
+            if (!image.ok) {
+                await safeReply(chatInteraction, image.error, true);
+                return;
+            }
+
             const question = await createShortAnswerQuestion({
                 content,
                 rubric,
                 category: getGuildCategoryName(chatInteraction.guild, chatInteraction.guildId),
+                imageUrl: image.imageUrl,
             });
 
             await safeReply(
                 chatInteraction,
-                `✅ 短答題新增成功！\nID：${question.id}\n題目：${question.content ?? content}`,
+                `✅ 短答題新增成功！\nID：${question.id}\n題目：${question.content ?? content}${image.imageUrl ? '\n圖片：已加入' : ''}`,
                 true,
             );
             return;
@@ -3073,6 +3218,10 @@ client.on('interactionCreate', async (interaction) => {
                     ))
                     .setFooter({ text: '每人只能作答一次，逾時後系統將拒絕作答。' })
                     .setTimestamp(new Date());
+                const imageUrl = getQuestionImageUrl(question.metadata);
+                if (imageUrl) {
+                    embed.setImage(imageUrl);
+                }
 
                 const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
@@ -3093,9 +3242,13 @@ client.on('interactionCreate', async (interaction) => {
                         .setStyle(ButtonStyle.Primary),
                 );
 
-                await chatInteraction.channel.send({
+                const openedMessage = await chatInteraction.channel.send({
                     embeds: [embed],
-                    components: [row],
+                    components: [row, buildAnswerCounterRow(question.id, openedAtMs, 0)],
+                });
+                openQuestionMessageRefs.set(`${question.id}:${openedAtMs}`, {
+                    channelId: openedMessage.channelId,
+                    messageId: openedMessage.id,
                 });
             } else if (question.question_type === 'short_answer' || question.question_type === 'survey') {
                 const embed = new EmbedBuilder()
@@ -3105,6 +3258,10 @@ client.on('interactionCreate', async (interaction) => {
                     .addFields(buildShortAnswerOpenFields(closeAtMs))
                     .setFooter({ text: '每人只能作答一次，逾時後系統將拒絕作答。' })
                     .setTimestamp(new Date());
+                const imageUrl = getQuestionImageUrl(question.metadata);
+                if (imageUrl) {
+                    embed.setImage(imageUrl);
+                }
 
                 const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
@@ -3113,9 +3270,13 @@ client.on('interactionCreate', async (interaction) => {
                         .setStyle(ButtonStyle.Success),
                 );
 
-                await chatInteraction.channel.send({
+                const openedMessage = await chatInteraction.channel.send({
                     embeds: [embed],
-                    components: [row],
+                    components: [row, buildAnswerCounterRow(question.id, openedAtMs, 0)],
+                });
+                openQuestionMessageRefs.set(`${question.id}:${openedAtMs}`, {
+                    channelId: openedMessage.channelId,
+                    messageId: openedMessage.id,
                 });
             } else {
                 await safeReply(chatInteraction, '目前 /open 只支援選擇題、短答題與問卷題', true);

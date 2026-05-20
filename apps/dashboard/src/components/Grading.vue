@@ -32,6 +32,20 @@ const isBatchGrading = ref(false)
 const batchProgress = ref({ current: 0, total: 0 })
 const errorMessage = ref('')
 
+function getQuestionImageUrl(question) {
+  const metadata = question?.metadata
+  const parsed = typeof metadata === 'string' ? (() => {
+    try {
+      const value = JSON.parse(metadata)
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+    } catch {
+      return null
+    }
+  })() : metadata
+  const imageUrl = parsed?.image_url
+  return typeof imageUrl === 'string' && /^https?:\/\//i.test(imageUrl) ? imageUrl : ''
+}
+
 const deepLinkTarget = ref({ responseId: null, questionId: null, attemptedTabs: new Set(), applied: false, missing: false })
 
 function buildGradingPayload(response) {
@@ -140,7 +154,7 @@ async function fetchResponses() {
         status,
         reaction_time,
         created_at,
-        question_bank!inner ( rubric, content, question_type ),
+        question_bank!inner ( rubric, content, metadata, question_type ),
         users ( display_name, student_id )
       `)
       .eq('status', currentTab.value)
@@ -375,7 +389,16 @@ defineExpose({ fetchResponses })
                 <span v-else class="px-2.5 py-1 text-xs font-bold bg-amber-100 text-amber-700 rounded-full border border-amber-200">待批改</span>
               </div>
 
-              <div v-if="selectedResponse.question_bank?.content"><h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">📋 題目內容</h4><div class="p-4 bg-gray-50 rounded-lg text-gray-700 whitespace-pre-wrap text-sm leading-relaxed">{{ selectedResponse.question_bank.content }}</div></div>
+              <div v-if="selectedResponse.question_bank?.content || getQuestionImageUrl(selectedResponse.question_bank)">
+                <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">📋 題目內容</h4>
+                <div v-if="selectedResponse.question_bank?.content" class="p-4 bg-gray-50 rounded-lg text-gray-700 whitespace-pre-wrap text-sm leading-relaxed">{{ selectedResponse.question_bank.content }}</div>
+                <img
+                  v-if="getQuestionImageUrl(selectedResponse.question_bank)"
+                  :src="getQuestionImageUrl(selectedResponse.question_bank)"
+                  alt="題目圖片"
+                  class="mt-3 max-h-80 rounded-lg border border-gray-200 object-contain"
+                />
+              </div>
               <div><h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">✍️ 學生作答</h4><div class="p-4 bg-blue-50/60 rounded-lg text-gray-800 whitespace-pre-wrap text-sm leading-relaxed border border-blue-100">{{ selectedResponse.answer_text || '（無作答內容）' }}</div></div>
               <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div class="p-3 rounded-lg border border-gray-200 bg-white">
