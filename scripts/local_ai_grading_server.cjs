@@ -1,9 +1,32 @@
 const http = require('http');
+const { GoogleAuth } = require('google-auth-library');
 
 const host = process.env.LOCAL_AI_GRADING_HOST || '127.0.0.1';
 const port = Number(process.env.LOCAL_AI_GRADING_PORT || 8787);
-const geminiApiKey = process.env.GEMINI_API_KEY;
 const geminiModel = process.env.GEMINI_MODEL || process.env.QUESTION_MODEL || 'gemini-3.1-flash-lite-preview';
+const gcpProjectId = process.env.GCP_PROJECT_ID;
+const gcpLocation = process.env.GCP_LOCATION || 'asia-east1';
+const GOOGLE_SCOPES = ['https://www.googleapis.com/auth/cloud-platform'];
+const defaultMaxOutputTokens = Number(process.env.AI_GRADING_MAX_OUTPUT_TOKENS || 1024);
+
+const createGoogleAuth = () => {
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (credentialsJson) {
+        try {
+            const credentials = JSON.parse(credentialsJson);
+            return new GoogleAuth({
+                scopes: GOOGLE_SCOPES,
+                credentials,
+            });
+        } catch (error) {
+            throw new Error(`GOOGLE_APPLICATION_CREDENTIALS_JSON 格式錯誤：${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    return new GoogleAuth({
+        scopes: GOOGLE_SCOPES,
+    });
+};
 
 function stripCodeFences(rawText) {
     const trimmed = String(rawText || '').trim();
@@ -18,10 +41,53 @@ function stripCodeFences(rawText) {
 }
 
 function parseGeminiText(data) {
-    return data?.candidates?.[0]?.content?.parts
+    const text = data?.candidates?.[0]?.content?.parts
         ?.map((part) => part?.text || '')
         .join('')
         .trim() || '';
+
+    if (text) {
+        return text;
+    }
+
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    const blockReason = data?.promptFeedback?.blockReason;
+    if (finishReason || blockReason) {
+        throw new Error(`Vertex AI 無內容回覆（finishReason=${finishReason || 'unknown'}, blockReason=${blockReason || 'none'}）`);
+    }
+
+    return '';
+}
+
+const shouldRetryForNoVisibleText = (error) =>
+    error instanceof Error && /finishReason=MAX_TOKENS/i.test(error.message);
+
+async function requestVertexGrade({ endpoint, accessToken, prompt, maxOutputTokens, withThinkingConfig }) {
+    const generationConfig = {
+        temperature: 0.2,
+        maxOutputTokens,
+    };
+
+    if (withThinkingConfig) {
+        generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    }
+
+    return fetch(endpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+            contents: [
+                {
+                    role: 'user',
+                    parts: [{ text: prompt }],
+                },
+            ],
+            generationConfig,
+        }),
+    });
 }
 
 function parseAiGrade(rawText) {
@@ -94,8 +160,8 @@ function writeJson(res, statusCode, payload) {
 }
 
 async function handleAiGrade(req, res) {
-    if (!geminiApiKey) {
-        writeJson(res, 500, { error: '缺少 GEMINI_API_KEY，無法執行 AI 批改。' });
+    if (!gcpProjectId) {
+        writeJson(res, 500, { error: '缺少 GCP_PROJECT_ID，無法執行 AI 批改。' });
         return;
     }
 
@@ -103,38 +169,73 @@ async function handleAiGrade(req, res) {
         const body = await readJsonBody(req);
         const prompt = buildPrompt(body || {});
 
-        const geminiResponse = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    contents: [
-                        {
-                            parts: [{ text: prompt }],
-                        },
-                    ],
-                    generationConfig: {
-                        temperature: 0.2,
-                        maxOutputTokens: 500,
-                        responseMimeType: 'application/json',
-                    },
-                }),
-            },
-        );
+        const authClient = await createGoogleAuth().getClient();
+        const accessToken = await authClient.getAccessToken();
+        if (!accessToken.token) {
+            writeJson(res, 500, { error: '無法取得 Vertex AI 存取權杖。' });
+            return;
+        }
+
+        const host = gcpLocation === 'global' ? 'aiplatform.googleapis.com' : `${gcpLocation}-aiplatform.googleapis.com`;
+        const endpoint = `https://${host}/v1/projects/${gcpProjectId}/locations/${gcpLocation}/publishers/google/models/${geminiModel}:generateContent`;
+        let geminiResponse = await requestVertexGrade({
+            endpoint,
+            accessToken: accessToken.token,
+            prompt,
+            maxOutputTokens: defaultMaxOutputTokens,
+            withThinkingConfig: true,
+        });
+
+        if (!geminiResponse.ok) {
+            const maybeThinkingConfigError = await geminiResponse.text();
+            if (/thinkingconfig|thinking_budget|unknown name/i.test(maybeThinkingConfigError)) {
+                geminiResponse = await requestVertexGrade({
+                    endpoint,
+                    accessToken: accessToken.token,
+                    prompt,
+                    maxOutputTokens: defaultMaxOutputTokens,
+                    withThinkingConfig: false,
+                });
+            } else {
+                writeJson(res, 502, { error: `Vertex AI 批改失敗：${geminiResponse.status} ${maybeThinkingConfigError}` });
+                return;
+            }
+        }
 
         if (!geminiResponse.ok) {
             const errorText = await geminiResponse.text();
-            writeJson(res, 502, { error: `Gemini 批改失敗：${geminiResponse.status} ${errorText}` });
+            writeJson(res, 502, { error: `Vertex AI 批改失敗：${geminiResponse.status} ${errorText}` });
             return;
         }
 
         const geminiPayload = await geminiResponse.json();
-        const rawText = parseGeminiText(geminiPayload);
+        let rawText;
+        try {
+            rawText = parseGeminiText(geminiPayload);
+        } catch (error) {
+            if (!shouldRetryForNoVisibleText(error)) {
+                throw error;
+            }
+
+            const retryResponse = await requestVertexGrade({
+                endpoint,
+                accessToken: accessToken.token,
+                prompt,
+                maxOutputTokens: Math.max(defaultMaxOutputTokens, 2048),
+                withThinkingConfig: true,
+            });
+
+            if (!retryResponse.ok) {
+                const retryErrorText = await retryResponse.text();
+                writeJson(res, 502, { error: `Vertex AI 重試批改失敗：${retryResponse.status} ${retryErrorText}` });
+                return;
+            }
+
+            const retryPayload = await retryResponse.json();
+            rawText = parseGeminiText(retryPayload);
+        }
         if (!rawText) {
-            writeJson(res, 502, { error: 'Gemini 沒有回傳批改內容。' });
+            writeJson(res, 502, { error: 'Vertex AI 沒有回傳批改內容。' });
             return;
         }
 

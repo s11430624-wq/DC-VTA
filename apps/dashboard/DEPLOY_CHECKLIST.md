@@ -10,9 +10,10 @@
 2. 確認沒有 `VITE_SUPABASE_SERVICE_ROLE_KEY`
 3. 確認 `VITE_SUPABASE_URL` 已設定
 4. 確認 `VITE_AI_GRADING_API_URL` 正確，或留空走預設 `/api/ai-grade`
-5. 確認 Vercel serverless env 已設定 `GEMINI_API_KEY`
+5. 確認 Vercel serverless env 已設定 `GCP_PROJECT_ID`（Vertex AI）
 6. 如未設定 `GEMINI_MODEL`，確認現場已有 `QUESTION_MODEL`
-7. 確認 deep-link 版本已包含 `tab/status/question_id/response_id`
+7. 確認部署環境具備可呼叫 Vertex AI 的 GCP 憑證與權限
+8. 確認 deep-link 版本已包含 `tab/status/question_id/response_id`
 
 ## 建議的 Vercel Env
 
@@ -27,8 +28,9 @@ VITE_AI_GRADING_API_URL=/api/ai-grade
 Serverless env:
 
 ```env
-GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.1-flash-lite-preview
+GCP_PROJECT_ID=...
+GCP_LOCATION=asia-east1
 ```
 
 備註：

@@ -1516,18 +1516,8 @@ const notifyTeacherLinkSuccess = async (params: {
     await channel.send({ embeds: [embed] });
 };
 
-const buildQuestionOpenFields = (options: string[], category: string, closeAtMs: number) => {
+const buildQuestionOpenFields = (options: string[], closeAtMs: number) => {
     const fields: APIEmbedField[] = [
-        {
-            name: '分類',
-            value: category,
-            inline: true,
-        },
-        {
-            name: '作答方式',
-            value: '請直接按下 A / B / C / D 按鈕作答',
-            inline: true,
-        },
         {
             name: '作答期限',
             value: `<t:${Math.floor(closeAtMs / 1000)}:R>`,
@@ -1799,8 +1789,15 @@ const buildAnswerCustomId = (questionId: number, option: 'A' | 'B' | 'C' | 'D', 
 const buildShortAnswerButtonCustomId = (questionId: number, openedAtMs: number, durationSeconds: number) =>
     `short:qid=${questionId}:open=${openedAtMs}:dur=${durationSeconds}`;
 
-const buildShortAnswerModalCustomId = (questionId: number, openedAtMs: number, durationSeconds: number) =>
-    `short_modal:qid=${questionId}:open=${openedAtMs}:dur=${durationSeconds}`;
+const buildShortAnswerModalCustomId = (
+    questionId: number,
+    openedAtMs: number,
+    durationSeconds: number,
+    messageId?: string,
+) => {
+    const base = `short_modal:qid=${questionId}:open=${openedAtMs}:dur=${durationSeconds}`;
+    return messageId ? `${base}:mid=${messageId}` : base;
+};
 
 const buildAnswerCounterCustomId = (questionId: number, openedAtMs: number) =>
     `answer_count:qid=${questionId}:open=${openedAtMs}`;
@@ -1859,9 +1856,10 @@ const incrementAnswerCounter = async (params: {
     channelId: string | null;
     questionId: number;
     openedAtMs: number | null;
+    messageId?: string | null;
     interactionMessage?: Message<boolean>;
 }) => {
-    const { channelId, questionId, openedAtMs, interactionMessage } = params;
+    const { channelId, questionId, openedAtMs, messageId, interactionMessage } = params;
     const openKey = buildOpenQuestionKey(questionId, openedAtMs);
     if (!openKey) return;
 
@@ -1882,7 +1880,7 @@ const incrementAnswerCounter = async (params: {
         const channel = await client.channels.fetch(resolvedChannelId);
         if (!channel || !channel.isTextBased() || !('messages' in channel)) return;
 
-        const targetMessageId = messageRef?.messageId;
+        const targetMessageId = messageId ?? messageRef?.messageId;
         if (!targetMessageId) return;
 
         const targetMessage = await channel.messages.fetch(targetMessageId);
@@ -1906,7 +1904,7 @@ const parseShortAnswerCustomId = (customId: string) => {
 };
 
 const parseShortAnswerModalCustomId = (customId: string) => {
-    const match = /^short_modal:qid=(\d+)(?::open=(\d{13}))?(?::dur=(\d+))?$/.exec(customId);
+    const match = /^short_modal:qid=(\d+)(?::open=(\d{13}))?(?::dur=(\d+))?(?::mid=(\d+))?$/.exec(customId);
     if (!match) {
         return null;
     }
@@ -1915,6 +1913,7 @@ const parseShortAnswerModalCustomId = (customId: string) => {
         questionId: Number(match[1]),
         openedAtMs: match[2] ? Number(match[2]) : null,
         durationSeconds: match[3] ? Number(match[3]) : null,
+        messageId: match[4] ?? null,
     };
 };
 
@@ -2060,6 +2059,8 @@ const formatGradingQueueResult = async () => {
 };
 
 const handleAnswerButton = async (interaction: ButtonInteraction) => {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     const parsedCustomId = parseAnswerCustomId(interaction.customId);
 
     if (!parsedCustomId) {
@@ -2155,21 +2156,13 @@ const handleShortAnswerButton = async (interaction: ButtonInteraction) => {
     }
 
     const questionId = parsedCustomId.questionId;
-    const question = await getQuestionById(questionId);
-    if (!question || (question.question_type !== 'short_answer' && question.question_type !== 'survey')) {
-        await safeReply(interaction, '找不到這個可文字作答的題目。', true);
-        return;
-    }
-
-    const allowRepeatAnswer = isSurveyRepeatAllowed(question);
-    const existingResponse = await getExistingResponse(interaction.user.id, parsedCustomId.questionId);
-    if (existingResponse && !(question.question_type === 'survey' && allowRepeatAnswer)) {
-        await safeReply(interaction, '⛔ 這一題你已經作答過了，每人只能提交一次。', true);
-        return;
-    }
-
     const modalCustomId = parsedCustomId.openedAtMs && parsedCustomId.durationSeconds
-        ? buildShortAnswerModalCustomId(questionId, parsedCustomId.openedAtMs, parsedCustomId.durationSeconds)
+        ? buildShortAnswerModalCustomId(
+            questionId,
+            parsedCustomId.openedAtMs,
+            parsedCustomId.durationSeconds,
+            interaction.message.id,
+        )
         : `short_modal:qid=${questionId}`;
 
     const modal = new ModalBuilder()
@@ -2660,6 +2653,8 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('short_modal:qid=')) {
         try {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
             const parsedCustomId = parseShortAnswerModalCustomId(interaction.customId);
             if (!parsedCustomId) {
                 await safeReply(interaction, '短答提交格式錯誤。', true);
@@ -2718,6 +2713,7 @@ client.on('interactionCreate', async (interaction) => {
                 channelId: interaction.channelId,
                 questionId,
                 openedAtMs: parsedCustomId.openedAtMs,
+                messageId: parsedCustomId.messageId,
             });
 
             await safeReply(
@@ -3213,7 +3209,6 @@ client.on('interactionCreate', async (interaction) => {
                     .setDescription(question.content ?? '（無題目內容）')
                     .addFields(buildQuestionOpenFields(
                         options,
-                        getQuestionTopic(question.metadata, question.category),
                         closeAtMs,
                     ))
                     .setFooter({ text: '每人只能作答一次，逾時後系統將拒絕作答。' })

@@ -207,7 +207,8 @@ AI grading API: http://127.0.0.1:8787/api/ai-grade
 2. `apps/dashboard/.env` 已填好：
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
-   - `GEMINI_API_KEY`（若要本機 AI 批改）
+   - `GCP_PROJECT_ID`（若要本機 AI 批改）
+   - `GCP_LOCATION`（選填，預設 `asia-east1`）
 3. 如果 dashboard 目錄不是預設值，再改 `apps/bot/.env` 的 `LOCAL_DASHBOARD_DIR`
 
 ## Discord 多伺服器設定

@@ -31,8 +31,9 @@ VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
 VITE_AI_GRADING_API_URL=/api/ai-grade
 VITE_LIFF_ID=
-GEMINI_API_KEY=
 GEMINI_MODEL=gemini-3.1-flash-lite-preview
+GCP_PROJECT_ID=
+GCP_LOCATION=asia-east1
 ```
 
 規則：
@@ -46,8 +47,9 @@ GEMINI_MODEL=gemini-3.1-flash-lite-preview
 - `VITE_SUPABASE_ANON_KEY`：前端登入與讀寫 `quiz_responses/question_bank/users/groups` 用
 - `VITE_AI_GRADING_API_URL`：可省略，預設會打 `/api/ai-grade`
 - `VITE_LIFF_ID`：只有保留舊 `StudentQuiz` LIFF 路由時才需要
-- `GEMINI_API_KEY`：Vercel serverless `api/ai-grade` 用，不會進 client bundle
-- `GEMINI_MODEL`：可省略；若未提供，程式也支援 fallback 到 `QUESTION_MODEL`
+- `GEMINI_MODEL`：可省略；若未提供，程式支援 fallback 到 `QUESTION_MODEL`
+- `GCP_PROJECT_ID`：Vertex AI 專案 ID（`api/ai-grade` 必填）
+- `GCP_LOCATION`：Vertex AI 區域，預設 `asia-east1`
 
 ## Vercel Deployment Env
 
@@ -64,8 +66,9 @@ VITE_AI_GRADING_API_URL=/api/ai-grade
 Serverless env:
 
 ```env
-GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.1-flash-lite-preview
+GCP_PROJECT_ID=...
+GCP_LOCATION=asia-east1
 ```
 
 如果你已經只有：
@@ -164,7 +167,7 @@ https://teacher-dashboard-two-mauve.vercel.app/?tab=grading&status=pending&quest
 
 1. 確認前端只暴露 `VITE_*` 變數
 2. 確認 deep-link 版本已部署
-3. 確認 Vercel 已設定 `GEMINI_API_KEY`，否則 AI 批改會失敗
+3. 確認 Vercel 已設定 `GCP_PROJECT_ID` 與可用的 GCP 憑證（Vertex AI）
 4. 確認 Discord Bot 的 `FRONTEND_BASE_URL` 指向這個正式網址
 5. 如果前端網址改變，要同步更新 `apps/bot/.env`
 
