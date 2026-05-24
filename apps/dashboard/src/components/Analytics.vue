@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, inject } from 'vue'
 import { supabase } from '../supabase'
 import { 
   BarChart3, 
@@ -13,6 +13,8 @@ import {
   ChevronUp,
   RefreshCw
 } from 'lucide-vue-next'
+
+const uiVariant = inject('uiVariant', ref('classic'))
 
 const responses = ref([])
 const loading = ref(false)
@@ -367,306 +369,542 @@ defineExpose({
 
 <template>
   <div class="w-full">
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 sm:mb-6">
-      <div class="flex items-center gap-2">
-        <BarChart3 class="w-5 h-5 sm:w-6 sm:h-6 text-green-600" />
-        <h2 class="text-xl sm:text-2xl font-bold text-gray-800">試題分析</h2>
-      </div>
-      <button
-        @click="fetchAnalytics"
-        class="w-full sm:w-auto justify-center px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2 text-sm sm:text-base"
-        :disabled="loading"
-      >
-        <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" />
-        重新整理
-      </button>
-    </div>
-
-    <!-- 搜索框與排序 -->
-    <div class="mb-4 sm:mb-6 flex flex-col sm:flex-row gap-3 sm:gap-4">
-      <div class="relative flex-1">
-        <Search class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-        <input
-          v-model="searchQuery"
-          type="text"
-          placeholder="搜尋題目內容或分類..."
-          class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition text-sm sm:text-base"
-        />
-      </div>
-      <select
-        v-model="selectedGroup"
-        class="px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition bg-white text-gray-700 w-full sm:max-w-[200px] truncate text-sm sm:text-base"
-      >
-        <option value="all">所有班級 (All Groups)</option>
-        <option v-for="className in availableClasses" :key="className" :value="className">
-          {{ className }}
-        </option>
-      </select>
-      <select
-        v-model="sortBy"
-        class="px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition bg-white text-gray-700 w-full sm:w-auto text-sm sm:text-base"
-      >
-        <option value="latest">最近發送 (Latest Sent)</option>
-        <option value="oldest">最久以前 (Oldest Sent)</option>
-        <option value="hardest">難易度由難到易 (Hardest)</option>
-      </select>
-    </div>
-
-    <!-- 載入狀態 -->
-    <div v-if="loading" class="text-center py-12 text-gray-500">
-      <RefreshCw class="w-8 h-8 animate-spin mx-auto mb-2" />
-      <p>載入分析數據中...</p>
-    </div>
-
-    <!-- 無數據 -->
-    <div v-else-if="filteredStats.length === 0" class="text-center py-12 text-gray-500">
-      <BarChart3 class="w-16 h-16 text-gray-400 mx-auto mb-4" />
-      <p class="text-lg">
-        {{ searchQuery ? '沒有找到符合搜尋條件的題目' : '目前還沒有答題記錄' }}
-      </p>
-    </div>
-
-    <!-- 統計列表 -->
-    <div v-else class="space-y-4">
-      <div
-        v-for="stat in filteredStats"
-        :key="stat.questionId"
-        class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden"
-      >
-        <!-- 問題摘要行 -->
-        <div
-          class="p-3 sm:p-4 cursor-pointer hover:bg-gray-50 transition-colors"
-          @click="toggleExpand(stat.questionId)"
-        >
-          <div class="flex items-start justify-between">
-            <div class="flex-1 min-w-0">
-              <div class="flex flex-wrap items-center gap-2 mb-2">
-                <span class="text-sm text-gray-500 font-mono">#{{ stat.questionId }}</span>
-                <span
-                  v-if="stat.question.category"
-                  class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded"
-                >
-                  {{ stat.question.category }}
-                </span>
-                <!-- 簡答題 Badge -->
-                <span
-                  v-if="stat.isShortAnswer"
-                  class="px-2 py-1 text-xs font-semibold bg-purple-100 text-purple-700 border border-purple-200 rounded"
-                >
-                  ✍️ 簡答題
-                </span>
-                <span
-                  v-if="stat.isSurvey"
-                  class="px-2 py-1 text-xs font-semibold bg-sky-100 text-sky-700 border border-sky-200 rounded"
-                >
-                  🗳️ 問卷題
-                </span>
-                <!-- 待批改提示 -->
-                <span
-                  v-if="stat.isShortAnswer && stat.hasPending"
-                  class="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200 rounded"
-                >
-                  ⏳ 待批改
-                </span>
-                <!-- 選擇題：準確率 Badge -->
-                <span
-                  v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz"
-                  :class="[
-                    'px-2 py-1 text-xs font-semibold rounded',
-                    getAccuracyColor(stat.accuracyRate)
-                  ]"
-                >
-                  {{ stat.accuracyRate }}% 準確率 <span class="hidden xl:inline">({{ stat.correctCount }}/{{ stat.totalAttempts }})</span>
-                </span>
-                <span
-                  v-if="stat.isSpeedQuiz"
-                  class="px-2 py-1 text-xs font-bold bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200 rounded shadow-sm"
-                >
-                  ⚡ 搶答挑戰
-                </span>
-                <span class="text-xs text-gray-500 ml-0 sm:ml-2 w-full sm:w-auto mt-1 sm:mt-0">
-                  發送時間: {{ stat.displaySentAt ? new Date(stat.displaySentAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) : '尚未發送' }}
-                </span>
-              </div>
-              <p class="text-sm sm:text-base text-gray-800 mb-3 line-clamp-2">
-                {{ stat.question.content || '（無題目描述，僅提供選項）' }}
-              </p>
-
-              <!-- 準確率進度條（只有選擇題且非搶答才顯示） -->
-              <div v-if="!stat.isSpeedQuiz && !stat.isShortAnswer && !stat.isSurvey" class="mb-4">
-                <div class="w-full bg-gray-200 rounded-full h-2">
-                  <div class="h-2 rounded-full transition-all duration-500" 
-                    :class="
-                      stat.accuracyRate >= 80 ? 'bg-green-500' : 
-                      stat.accuracyRate >= 60 ? 'bg-yellow-500' : 
-                      stat.accuracyRate >= 40 ? 'bg-orange-500' : 'bg-red-500'
-                    "
-                    :style="{ width: stat.accuracyRate + '%' }"
-                  ></div>
-                </div>
-              </div>
-
-              <div class="flex flex-wrap items-center gap-3 sm:gap-4 text-xs sm:text-sm text-gray-600">
-                <div class="flex items-center gap-1">
-                  <Users class="w-4 h-4" />
-                  <span>{{ stat.isSpeedQuiz ? '入榜人數' : '已作答' }}<span class="hidden sm:inline">:</span> {{ stat.displayStudents.length }}</span>
-                </div>
-
-                <!-- 選擇題的答對/答錯統計 -->
-                <template v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz">
-                  <div class="flex items-center gap-1 text-green-600">
-                    <CheckCircle2 class="w-4 h-4" />
-                    <span>答對<span class="hidden sm:inline">:</span> {{ stat.correctCount }}</span>
-                  </div>
-                  <div class="flex items-center gap-1 text-red-600">
-                    <XCircle class="w-4 h-4" />
-                    <span>答錯<span class="hidden sm:inline">:</span> {{ stat.incorrectCount }}</span>
-                  </div>
-                  <div class="flex items-center gap-1 ml-auto sm:ml-0">
-                    <TrendingDown
-                      v-if="stat.accuracyRate < 50"
-                      class="w-4 h-4 text-red-500"
-                    />
-                    <TrendingUp
-                      v-else-if="stat.accuracyRate >= 80"
-                      class="w-4 h-4 text-green-500"
-                    />
-                    <span
-                      :class="[
-                        'font-semibold',
-                        stat.accuracyRate < 50 ? 'text-red-600' : 
-                        stat.accuracyRate >= 80 ? 'text-green-600' : 'text-yellow-600'
-                      ]"
-                    >
-                      {{ stat.accuracyRate < 50 ? '困難' : stat.accuracyRate >= 80 ? '簡單' : '中等' }}
-                    </span>
-                  </div>
-                </template>
-
-                <!-- 簡答題的平均分統計 -->
-                <template v-if="stat.isShortAnswer">
-                  <div v-if="stat.avgScore != null" class="flex items-center gap-1" :class="getScoreColor(stat.avgScore)">
-                    <span class="font-semibold">平均得分: {{ stat.avgScore }} 分</span>
-                  </div>
-                  <div v-if="stat.hasPending" class="flex items-center gap-1 text-gray-500">
-                    <span>{{ stat.students.filter(s => s.status === 'pending').length }} 份待批改</span>
-                  </div>
-                </template>
-                <template v-if="stat.isSurvey">
-                  <div class="flex items-center gap-1 text-sky-700">
-                    <span>顯示問卷填寫內容（不計答對/答錯）</span>
-                  </div>
-                </template>
-              </div>
-            </div>
-            <div class="ml-2 sm:ml-4 shrink-0 mt-1">
-              <ChevronDown
-                v-if="!expandedQuestions.has(stat.questionId)"
-                class="w-5 h-5 text-gray-400"
-              />
-              <ChevronUp
-                v-else
-                class="w-5 h-5 text-gray-400"
-              />
-            </div>
+    <!-- ============================================== -->
+    <!-- Option A: Redesigned UI Layout (Academic)      -->
+    <!-- ============================================== -->
+    <div v-if="uiVariant === 'redesigned'" class="w-full">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 sm:mb-6 bg-white p-4 rounded-xl border border-slate-200/60 shadow-academic animate-fadeIn">
+        <div class="flex items-center gap-2.5">
+          <div class="p-2 bg-blue-50 text-blue-600 rounded-lg">
+            <BarChart3 class="w-5 h-5 sm:w-6 sm:h-6" />
           </div>
+          <h2 class="text-lg sm:text-xl font-bold text-slate-800">試題分析</h2>
         </div>
+        <button
+          @click="fetchAnalytics"
+          class="w-full sm:w-auto justify-center px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg transition-smooth flex items-center gap-2 text-sm sm:text-base font-semibold btn-academic-active touch-target"
+          :disabled="loading"
+        >
+          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" />
+          重新整理
+        </button>
+      </div>
 
-        <!-- 展開的學生詳情 -->
-        <Transition name="expand">
+      <!-- Search & Filters -->
+      <div class="mb-5 sm:mb-6 flex flex-col md:flex-row gap-3">
+        <div class="relative flex-1">
+          <Search class="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4.5 h-4.5 text-slate-400" />
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="搜尋題目內容或分類..."
+            class="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-smooth text-sm font-medium shadow-academic"
+          />
+        </div>
+        <select
+          v-model="selectedGroup"
+          class="px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-smooth text-sm font-semibold text-slate-700 shadow-academic touch-target"
+        >
+          <option value="all">所有班級 (All Groups)</option>
+          <option v-for="className in availableClasses" :key="className" :value="className">
+            {{ className }}
+          </option>
+        </select>
+        <select
+          v-model="sortBy"
+          class="px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-smooth text-sm font-semibold text-slate-700 shadow-academic touch-target"
+        >
+          <option value="latest">⚡ 最近發送 (Latest Sent)</option>
+          <option value="oldest">⏳ 最久以前 (Oldest Sent)</option>
+          <option value="hardest">🔥 難易度排序 (Hardest)</option>
+        </select>
+      </div>
+
+      <!-- Loading State -->
+      <div v-if="loading" class="text-center py-16 bg-white rounded-2xl border border-slate-200/60 shadow-academic text-slate-400">
+        <RefreshCw class="w-8 h-8 animate-spin mx-auto mb-3 text-blue-600" />
+        <p class="font-medium text-sm">正在分析答題數據...</p>
+      </div>
+
+      <!-- Empty State -->
+      <div v-else-if="filteredStats.length === 0" class="text-center py-16 bg-white rounded-2xl border border-slate-200/60 shadow-academic text-slate-400">
+        <BarChart3 class="w-12 h-12 mx-auto mb-4 text-slate-300" />
+        <p class="text-base font-bold text-slate-800 mb-1">{{ searchQuery ? '沒有找到符合搜尋條件的題目' : '目前還沒有答題記錄' }}</p>
+        <p class="text-xs text-slate-400">當學生在 Discord 完成作答後，此處將自動產生深度分析報告。</p>
+      </div>
+
+      <!-- Statistics list -->
+      <div v-else class="space-y-4">
+        <div
+          v-for="stat in filteredStats"
+          :key="stat.questionId"
+          class="bg-white rounded-2xl shadow-academic border border-slate-200/60 overflow-hidden hover:border-blue-100 transition-smooth"
+        >
+          <!-- Summary header card -->
           <div
-            v-if="expandedQuestions.has(stat.questionId)"
-            class="border-t border-gray-200 bg-gray-50"
+            class="p-4 sm:p-5 cursor-pointer hover:bg-slate-50/50 transition-smooth"
+            @click="toggleExpand(stat.questionId)"
           >
-            <div class="p-4 sm:p-5">
-              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                <h4 class="text-sm font-semibold text-gray-700">
-                  學生答題詳情 (顯示 {{ stat.displayStudents.length }} 人)
-                </h4>
-                <select
-                  v-if="!stat.isShortAnswer && !stat.isSurvey"
-                  v-model="studentSortBy"
-                  class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none w-full sm:w-auto bg-white text-gray-700"
-                >
-                  <option value="correctness">預設排序 (答對在前)</option>
-                  <option value="fastest">反應時間 (最快在前)</option>
-                </select>
+            <div class="flex items-start justify-between gap-4">
+              <div class="flex-1 min-w-0">
+                <div class="flex flex-wrap items-center gap-2 mb-2.5">
+                  <span class="text-xs text-slate-400 font-mono font-bold tracking-tight bg-slate-50 px-2 py-0.5 rounded border border-slate-200/60">#{{ stat.questionId }}</span>
+                  <span
+                    v-if="stat.question.category"
+                    class="px-2 py-0.5 text-[10px] sm:text-xs bg-blue-50 text-blue-600 font-bold rounded-lg"
+                  >
+                    {{ stat.question.category }}
+                  </span>
+                  
+                  <span
+                    v-if="stat.isShortAnswer"
+                    class="px-2 py-0.5 text-[10px] sm:text-xs font-bold bg-purple-50 text-purple-700 border border-purple-100 rounded-lg"
+                  >
+                    ✍️ 簡答題
+                  </span>
+                  <span
+                    v-if="stat.isSurvey"
+                    class="px-2 py-0.5 text-[10px] sm:text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg"
+                  >
+                    🗳️ 問卷題
+                  </span>
+                  
+                  <span
+                    v-if="stat.isShortAnswer && stat.hasPending"
+                    class="px-2 py-0.5 text-[10px] sm:text-xs font-bold bg-amber-50 text-amber-600 border border-amber-100 rounded-lg animate-pulse"
+                  >
+                    ⏳ 待批改
+                  </span>
+                  
+                  <span
+                    v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz"
+                    class="px-2 py-0.5 text-[10px] sm:text-xs font-bold rounded-lg"
+                    :class="[
+                      stat.accuracyRate >= 80 ? 'text-emerald-700 bg-emerald-50' :
+                      stat.accuracyRate >= 60 ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50'
+                    ]"
+                  >
+                    {{ stat.accuracyRate }}% 準確率
+                  </span>
+                  <span
+                    v-if="stat.isSpeedQuiz"
+                    class="px-2 py-0.5 text-[10px] sm:text-xs font-bold bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-100 rounded-lg shadow-sm"
+                  >
+                    ⚡ 搶答挑戰
+                  </span>
+                  <span class="text-[11px] text-slate-400 font-medium">
+                    🕒 發送: {{ stat.displaySentAt ? new Date(stat.displaySentAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) : '尚未發送' }}
+                  </span>
+                </div>
+                
+                <p class="text-sm sm:text-base font-bold text-slate-800 mb-3 break-words">
+                  {{ stat.question.content || '（無題目描述，僅提供選項）' }}
+                </p>
+
+                <!-- Accuracy Progress Bar -->
+                <div v-if="!stat.isSpeedQuiz && !stat.isShortAnswer && !stat.isSurvey" class="mb-3">
+                  <div class="w-full bg-slate-100 rounded-full h-2">
+                    <div class="h-2 rounded-full transition-smooth duration-500" 
+                      :class="
+                        stat.accuracyRate >= 80 ? 'bg-emerald-500' : 
+                        stat.accuracyRate >= 60 ? 'bg-amber-500' : 'bg-red-500'
+                      "
+                      :style="{ width: stat.accuracyRate + '%' }"
+                    ></div>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-500">
+                  <div class="flex items-center gap-1">
+                    <Users class="w-4 h-4" />
+                    <span>{{ stat.isSpeedQuiz ? '上榜小隊' : '已參與作答' }}: <span class="font-mono font-bold text-slate-700">{{ stat.displayStudents.length }}</span> 人</span>
+                  </div>
+
+                  <!-- Multiple choice correct / incorrect stats -->
+                  <template v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz">
+                    <div class="flex items-center gap-1 text-emerald-600">
+                      <CheckCircle2 class="w-4 h-4" />
+                      <span>答對: <span class="font-mono font-bold">{{ stat.correctCount }}</span></span>
+                    </div>
+                    <div class="flex items-center gap-1 text-red-500">
+                      <XCircle class="w-4 h-4" />
+                      <span>答錯: <span class="font-mono font-bold">{{ stat.incorrectCount }}</span></span>
+                    </div>
+                  </template>
+
+                  <!-- Short Answer stats -->
+                  <template v-if="stat.isShortAnswer">
+                    <div v-if="stat.avgScore != null" class="flex items-center gap-1" :class="getScoreColor(stat.avgScore)">
+                      <span class="font-bold">平均得分: {{ stat.avgScore }} 分</span>
+                    </div>
+                    <div v-if="stat.hasPending" class="flex items-center gap-1 text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-100/50 text-[10px]">
+                      <span>{{ stat.students.filter(s => s.status === 'pending').length }} 份簡答待批改</span>
+                    </div>
+                  </template>
+                </div>
               </div>
               
-              <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div
-                  v-for="(student, index) in getSortedStudents(stat.displayStudents)"
-                  :key="index"
-                  :class="[
-                    'p-4 rounded-lg shadow-sm flex flex-col hover:shadow-md transition-all duration-300 border',
-                    student.cardClass
-                  ]"
-                >
-                  <div class="flex items-start justify-between mb-2">
-                    <div class="flex flex-col gap-1">
-                      <div class="flex items-center gap-2 mt-1">
-                        <span class="text-xl leading-none select-none">{{ student.rankIcon }}</span>
-                        <span :class="['text-lg', student.textClass]">
-                          {{ student.displayName }}
-                        </span>
+              <div class="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg shrink-0 mt-1 transition-smooth">
+                <ChevronDown v-if="!expandedQuestions.has(stat.questionId)" class="w-5 h-5" />
+                <ChevronUp v-else class="w-5 h-5" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Expandable Student Details (Accordion Layout) -->
+          <Transition name="expand">
+            <div
+              v-if="expandedQuestions.has(stat.questionId)"
+              class="border-t border-slate-200/60 bg-slate-50/50"
+            >
+              <div class="p-4 sm:p-5">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                  <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                    📋 學生作答詳情 (顯示 {{ stat.displayStudents.length }} 筆)
+                  </h4>
+                  <select
+                    v-if="!stat.isShortAnswer && !stat.isSurvey"
+                    v-model="studentSortBy"
+                    class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none w-full sm:w-auto bg-white text-slate-700 font-semibold shadow-sm touch-target"
+                  >
+                    <option value="correctness">預設排序 (答對在前)</option>
+                    <option value="fastest">反應時間 (最快在前)</option>
+                  </select>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <div
+                    v-for="(student, index) in getSortedStudents(stat.displayStudents)"
+                    :key="index"
+                    class="p-4 bg-white rounded-xl shadow-academic border border-slate-200/60 flex flex-col hover:border-slate-300 hover:shadow-academic-hover transition-smooth"
+                  >
+                    <div class="flex items-start justify-between mb-3 gap-2">
+                      <div class="flex items-center gap-2">
+                        <span class="text-lg select-none">{{ student.rankIcon || '👤' }}</span>
+                        <span class="text-sm font-bold text-slate-800 tracking-tight">{{ student.displayName }}</span>
                       </div>
-                    </div>
-                    
-                    <div class="flex flex-col items-end gap-1">
+                      
                       <span
+                        class="text-[10px] px-2 py-0.5 rounded-full font-bold border whitespace-nowrap"
                         :class="[
-                          'text-xs px-2 py-1 rounded-full font-semibold whitespace-nowrap',
-                          student.badgeClass
+                          student.isCorrect ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
+                          student.score >= 60 ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-rose-50 text-rose-700 border-rose-100'
                         ]"
                       >
                         {{ student.statusText }}
                       </span>
                     </div>
-                  </div>
 
-                  <!-- 簡答題：學生回答 & AI 回饋 -->
-                  <div v-if="(stat.isShortAnswer || stat.isSurvey) && (student.answerText || student.aiFeedback)" class="mb-3 space-y-2">
-                    <div v-if="student.answerText" class="bg-purple-50 border border-purple-100 rounded-lg p-3">
-                      <p class="text-xs font-medium text-purple-600 mb-1">{{ stat.isSurvey ? '🗳️ 問卷填寫內容' : '📝 學生回答' }}</p>
-                      <p class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{{ student.answerText }}</p>
+                    <!-- Short answer custom text bubbles -->
+                    <div v-if="(stat.isShortAnswer || stat.isSurvey) && (student.answerText || student.aiFeedback)" class="mb-3 space-y-2.5">
+                      <div v-if="student.answerText" class="bg-blue-50/50 border border-blue-100/60 rounded-xl p-3 shadow-sm shadow-blue-500/[0.01]">
+                        <p class="text-[9px] font-bold text-blue-600 tracking-wider uppercase mb-1">{{ stat.isSurvey ? '🗳️ 問卷答案' : '📝 學生回答' }}</p>
+                        <p class="text-xs text-slate-700 font-medium leading-relaxed whitespace-pre-wrap">{{ student.answerText }}</p>
+                      </div>
+                      <div v-if="stat.isShortAnswer && student.aiFeedback" class="bg-violet-50/50 border border-violet-100/60 rounded-xl p-3 shadow-sm shadow-violet-500/[0.01]">
+                        <p class="text-[9px] font-bold text-violet-600 tracking-wider uppercase mb-1">🤖 AI 點評</p>
+                        <p class="text-xs text-slate-600 font-medium leading-relaxed whitespace-pre-wrap">{{ student.aiFeedback }}</p>
+                      </div>
                     </div>
-                    <div v-if="stat.isShortAnswer && student.aiFeedback" class="bg-blue-50 border border-blue-100 rounded-lg p-3">
-                      <p class="text-xs font-medium text-blue-600 mb-1">🤖 AI 回饋</p>
-                      <p class="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">{{ student.aiFeedback }}</p>
+                    
+                    <div class="flex items-center justify-between mt-auto pt-3 border-t border-slate-100 text-xs">
+                      <span class="text-[10px] text-slate-400 font-mono font-bold bg-slate-50 px-1.5 py-0.5 rounded">{{ student.studentId }}</span>
+                      
+                      <template v-if="!stat.isShortAnswer && !stat.isSurvey">
+                        <span v-if="student.reactionTime != null" class="text-xs font-bold" :class="student.reactionTime < 10 ? 'text-amber-600' : 'text-slate-500'">
+                          ⚡ {{ student.reactionTime }} 秒
+                        </span>
+                        <span v-else class="text-xs text-slate-300">⚡ --</span>
+                      </template>
+                      <template v-else-if="stat.isSurvey">
+                        <span class="text-[10px] text-slate-400 font-semibold">
+                          {{ new Date(student.createdAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) }}
+                        </span>
+                      </template>
+                      <template v-else>
+                        <span v-if="student.status === 'graded'" class="text-xs font-bold text-blue-600">
+                          🎯 {{ student.score }} 分
+                        </span>
+                        <span v-else class="text-xs text-slate-400 font-semibold animate-pulse">⏳ 批改中...</span>
+                      </template>
                     </div>
-                  </div>
-                  
-                  <div class="flex items-center justify-between mt-auto pt-3 border-t border-black/5">
-                    <span class="text-sm text-gray-500 font-mono">
-                      {{ student.studentId }}
-                    </span>
-                    <template v-if="!stat.isShortAnswer && !stat.isSurvey">
-                      <span v-if="student.reactionTime != null" class="text-sm font-medium" :class="student.reactionTime < 10 ? 'text-amber-600' : 'text-gray-600'">
-                        ⚡ {{ student.reactionTime }} 秒
-                      </span>
-                      <span v-else class="text-sm text-gray-400">
-                        ⚡ --
-                      </span>
-                    </template>
-                    <template v-else-if="stat.isSurvey">
-                      <span class="text-sm text-gray-500">
-                        {{ new Date(student.createdAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) }}
-                      </span>
-                    </template>
-                    <template v-else>
-                      <span v-if="student.status === 'graded'" class="text-sm font-semibold" :class="getScoreColor(student.score)">
-                        {{ student.score }} 分
-                      </span>
-                      <span v-else class="text-sm text-gray-400">
-                        尚未批改
-                      </span>
-                    </template>
                   </div>
                 </div>
               </div>
             </div>
+          </Transition>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================== -->
+    <!-- Option B: Classic UI Layout (Original Green)   -->
+    <!-- ============================================== -->
+    <div v-else class="w-full">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 sm:mb-6">
+        <div class="flex items-center gap-2">
+          <BarChart3 class="w-5 h-5 sm:w-6 sm:h-6 text-green-600" />
+          <h2 class="text-xl sm:text-2xl font-bold text-gray-800">試題分析</h2>
+        </div>
+        <button
+          @click="fetchAnalytics"
+          class="w-full sm:w-auto justify-center px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2 text-sm sm:text-base"
+          :disabled="loading"
+        >
+          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" />
+          重新整理
+        </button>
+      </div>
+
+      <!-- 搜索框與排序 -->
+      <div class="mb-4 sm:mb-6 flex flex-col sm:flex-row gap-3 sm:gap-4">
+        <div class="relative flex-1">
+          <Search class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="搜尋題目內容或分類..."
+            class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition text-sm sm:text-base"
+          />
+        </div>
+        <select
+          v-model="selectedGroup"
+          class="px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition bg-white text-gray-700 w-full sm:max-w-[200px] truncate text-sm sm:text-base"
+        >
+          <option value="all">所有班級 (All Groups)</option>
+          <option v-for="className in availableClasses" :key="className" :value="className">
+            {{ className }}
+          </option>
+        </select>
+        <select
+          v-model="sortBy"
+          class="px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition bg-white text-gray-700 w-full sm:w-auto text-sm sm:text-base"
+        >
+          <option value="latest">最近發送 (Latest Sent)</option>
+          <option value="oldest">最久以前 (Oldest Sent)</option>
+          <option value="hardest">難易度由難到易 (Hardest)</option>
+        </select>
+      </div>
+
+      <!-- 載入狀態 -->
+      <div v-if="loading" class="text-center py-12 text-gray-500">
+        <RefreshCw class="w-8 h-8 animate-spin mx-auto mb-2" />
+        <p>載入分析數據中...</p>
+      </div>
+
+      <!-- 無數據 -->
+      <div v-else-if="filteredStats.length === 0" class="text-center py-12 text-gray-500">
+        <BarChart3 class="w-16 h-16 text-gray-400 mx-auto mb-4" />
+        <p class="text-lg">
+          {{ searchQuery ? '沒有找到符合搜尋條件的題目' : '目前還沒有答題記錄' }}
+        </p>
+      </div>
+
+      <!-- 統計列表 -->
+      <div v-else class="space-y-4">
+        <div
+          v-for="stat in filteredStats"
+          :key="stat.questionId"
+          class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden"
+        >
+          <!-- 問題摘要行 -->
+          <div
+            class="p-3 sm:p-4 cursor-pointer hover:bg-gray-50 transition-colors"
+            @click="toggleExpand(stat.questionId)"
+          >
+            <div class="flex items-start justify-between">
+              <div class="flex-1 min-w-0">
+                <div class="flex flex-wrap items-center gap-2 mb-2">
+                  <span class="text-sm text-gray-500 font-mono">#{{ stat.questionId }}</span>
+                  <span
+                    v-if="stat.question.category"
+                    class="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded"
+                  >
+                    {{ stat.question.category }}
+                  </span>
+                  <!-- 簡答題 Badge -->
+                  <span
+                    v-if="stat.isShortAnswer"
+                    class="px-2 py-1 text-xs font-semibold bg-purple-100 text-purple-700 border border-purple-200 rounded"
+                  >
+                    ✍️ 簡答題
+                  </span>
+                  <span
+                    v-if="stat.isSurvey"
+                    class="px-2 py-1 text-xs font-semibold bg-sky-100 text-sky-700 border border-sky-200 rounded"
+                  >
+                    🗳️ 問卷題
+                  </span>
+                  <!-- 待批改提示 -->
+                  <span
+                    v-if="stat.isShortAnswer && stat.hasPending"
+                    class="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200 rounded"
+                  >
+                    ⏳ 待批改
+                  </span>
+                  <!-- 選擇題：準確率 Badge -->
+                  <span
+                    v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz"
+                    :class="[
+                      'px-2 py-1 text-xs font-semibold rounded',
+                      getAccuracyColor(stat.accuracyRate)
+                    ]"
+                  >
+                    {{ stat.accuracyRate }}% 準確率 <span class="hidden xl:inline">({{ stat.correctCount }}/{{ stat.totalAttempts }})</span>
+                  </span>
+                  <span
+                    v-if="stat.isSpeedQuiz"
+                    class="px-2 py-1 text-xs font-bold bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200 rounded shadow-sm"
+                  >
+                    ⚡ 搶答挑戰
+                  </span>
+                  <span class="text-xs text-gray-500 ml-0 sm:ml-2 w-full sm:w-auto mt-1 sm:mt-0">
+                    發送時間: {{ stat.displaySentAt ? new Date(stat.displaySentAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) : '尚未發送' }}
+                  </span>
+                </div>
+                <p class="text-sm sm:text-base text-gray-800 mb-3 line-clamp-2">
+                  {{ stat.question.content || '（無題目描述，僅提供選項）' }}
+                </p>
+
+                <!-- 準確率進度條 -->
+                <div v-if="!stat.isSpeedQuiz && !stat.isShortAnswer && !stat.isSurvey" class="mb-4">
+                  <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div class="h-2 rounded-full transition-all duration-500" 
+                      :class="
+                        stat.accuracyRate >= 80 ? 'bg-green-500' : 
+                        stat.accuracyRate >= 60 ? 'bg-yellow-500' : 
+                        stat.accuracyRate >= 40 ? 'bg-orange-500' : 'bg-red-500'
+                      "
+                      :style="{ width: stat.accuracyRate + '%' }"
+                    ></div>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-3 sm:gap-4 text-xs sm:text-sm text-gray-600">
+                  <div class="flex items-center gap-1">
+                    <Users class="w-4 h-4" />
+                    <span>{{ stat.isSpeedQuiz ? '入榜人數' : '已作答' }}<span class="hidden sm:inline">:</span> {{ stat.displayStudents.length }}</span>
+                  </div>
+
+                  <template v-if="!stat.isShortAnswer && !stat.isSurvey && !stat.isSpeedQuiz">
+                    <div class="flex items-center gap-1 text-green-600">
+                      <CheckCircle2 class="w-4 h-4" />
+                      <span>答對<span class="hidden sm:inline">:</span> {{ stat.correctCount }}</span>
+                    </div>
+                    <div class="flex items-center gap-1 text-red-600">
+                      <XCircle class="w-4 h-4" />
+                      <span>答錯<span class="hidden sm:inline">:</span> {{ stat.incorrectCount }}</span>
+                    </div>
+                  </template>
+
+                  <template v-if="stat.isShortAnswer">
+                    <div v-if="stat.avgScore != null" class="flex items-center gap-1" :class="getScoreColor(stat.avgScore)">
+                      <span class="font-semibold">平均得分: {{ stat.avgScore }} 分</span>
+                    </div>
+                    <div v-if="stat.hasPending" class="flex items-center gap-1 text-gray-500">
+                      <span>{{ stat.students.filter(s => s.status === 'pending').length }} 份待批改</span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <div class="ml-2 sm:ml-4 shrink-0 mt-1">
+                <ChevronDown v-if="!expandedQuestions.has(stat.questionId)" class="w-5 h-5 text-gray-400" />
+                <ChevronUp v-else class="w-5 h-5 text-gray-400" />
+              </div>
+            </div>
           </div>
-        </Transition>
+
+          <!-- 展開的學生詳情 -->
+          <Transition name="expand">
+            <div
+              v-if="expandedQuestions.has(stat.questionId)"
+              class="border-t border-gray-200 bg-gray-50"
+            >
+              <div class="p-4 sm:p-5">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                  <h4 class="text-sm font-semibold text-gray-700">
+                    學生答題詳情 (顯示 {{ stat.displayStudents.length }} 人)
+                  </h4>
+                  <select
+                    v-if="!stat.isShortAnswer && !stat.isSurvey"
+                    v-model="studentSortBy"
+                    class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none w-full sm:w-auto bg-white text-gray-700"
+                  >
+                    <option value="correctness">預設排序 (答對在前)</option>
+                    <option value="fastest">反應時間 (最快在前)</option>
+                  </select>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div
+                    v-for="(student, index) in getSortedStudents(stat.displayStudents)"
+                    :key="index"
+                    :class="[
+                      'p-4 rounded-lg shadow-sm flex flex-col hover:shadow-md transition-all duration-300 border',
+                      student.cardClass
+                    ]"
+                  >
+                    <div class="flex items-start justify-between mb-2">
+                      <div class="flex flex-col gap-1">
+                        <div class="flex items-center gap-2 mt-1">
+                          <span class="text-xl leading-none select-none">{{ student.rankIcon }}</span>
+                          <span :class="['text-lg', student.textClass]">
+                            {{ student.displayName }}
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div class="flex flex-col items-end gap-1">
+                        <span
+                          :class="[
+                            'text-xs px-2 py-1 rounded-full font-semibold whitespace-nowrap',
+                            student.badgeClass
+                          ]"
+                        >
+                          {{ student.statusText }}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div v-if="(stat.isShortAnswer || stat.isSurvey) && (student.answerText || student.aiFeedback)" class="mb-3 space-y-2">
+                      <div v-if="student.answerText" class="bg-purple-50 border border-purple-100 rounded-lg p-3">
+                        <p class="text-xs font-medium text-purple-600 mb-1">{{ stat.isSurvey ? '🗳️ 問卷填寫內容' : '📝 學生回答' }}</p>
+                        <p class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{{ student.answerText }}</p>
+                      </div>
+                      <div v-if="stat.isShortAnswer && student.aiFeedback" class="bg-blue-50 border border-blue-100 rounded-lg p-3">
+                        <p class="text-xs font-medium text-blue-600 mb-1">🤖 AI 回饋</p>
+                        <p class="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">{{ student.aiFeedback }}</p>
+                      </div>
+                    </div>
+                    
+                    <div class="flex items-center justify-between mt-auto pt-3 border-t border-black/5">
+                      <span class="text-sm text-gray-500 font-mono">
+                        {{ student.studentId }}
+                      </span>
+                      <template v-if="!stat.isShortAnswer && !stat.isSurvey">
+                        <span v-if="student.reactionTime != null" class="text-sm font-medium" :class="student.reactionTime < 10 ? 'text-amber-600' : 'text-gray-600'">
+                          ⚡ {{ student.reactionTime }} 秒
+                        </span>
+                        <span v-else class="text-sm text-gray-400">⚡ --</span>
+                      </template>
+                      <template v-else-if="stat.isSurvey">
+                        <span class="text-sm text-gray-500">
+                          {{ new Date(student.createdAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) }}
+                        </span>
+                      </template>
+                      <template v-else>
+                        <span v-if="student.status === 'graded'" class="text-sm font-semibold" :class="getScoreColor(student.score)">
+                          {{ student.score }} 分
+                        </span>
+                        <span v-else class="text-sm text-gray-400">尚未批改</span>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Transition>
+        </div>
       </div>
     </div>
   </div>
