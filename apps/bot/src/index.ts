@@ -1051,7 +1051,7 @@ const formatResponseList = (
         const displayName = user?.display_name || '未知使用者';
         const studentId = user?.student_id || '無學號';
         const reactionTime = typeof response.reaction_time === 'number' && Number.isFinite(response.reaction_time)
-            ? `${response.reaction_time.toFixed(1)} 秒`
+            ? formatReactionTime(response.reaction_time)
             : '未記錄';
         return `${index + 1}. ${displayName} (${studentId})｜${reactionTime} [選${response.selected_option}]`;
     });
@@ -1060,6 +1060,14 @@ const formatResponseList = (
         lines,
         truncated: responses.length > maxLines,
     };
+};
+
+const formatReactionTime = (seconds: number) => {
+    const totalSeconds = Math.max(0, Math.round(seconds));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const remainingSeconds = totalSeconds % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
 };
 
 const sortResponsesByReactionTime = (responses: QuizResponse[]) => [...responses].sort((a, b) => {
@@ -1108,7 +1116,7 @@ const formatCheckResult = async (questionId: number) => {
                 const studentId = user?.student_id || '無學號';
                 const answerText = response.answer_text?.trim() || '（未填寫內容）';
                 const reactionTime = typeof response.reaction_time === 'number' && Number.isFinite(response.reaction_time)
-                    ? `${response.reaction_time.toFixed(1)} 秒`
+                    ? formatReactionTime(response.reaction_time)
                     : '未記錄';
                 return [`${index + 1}. ${displayName} (${studentId})｜${reactionTime}`, answerText, ''];
             }),

@@ -385,7 +385,14 @@ defineExpose({ fetchQuestions })
               <div 
                 v-for="q in filteredAndSortedQuestions" 
                 :key="q.id" 
-                class="bg-white rounded-2xl shadow-academic border border-slate-200/60 p-4 sm:p-5 hover:border-blue-200 hover:shadow-academic-hover transition-smooth shadow-academic-hover animate-fadeIn"
+                class="bg-white rounded-2xl shadow-academic border-2 p-4 sm:p-5 hover:shadow-academic-hover transition-all duration-300 shadow-academic-hover animate-fadeIn"
+                :class="[
+                  q.question_type === 'multiple_choice'
+                    ? 'border-blue-300/90 hover:border-blue-400'
+                    : q.question_type === 'survey'
+                      ? 'border-emerald-300/90 hover:border-emerald-400'
+                      : 'border-purple-300/90 hover:border-purple-400'
+                ]"
               >
                 <div class="flex items-start justify-between gap-4">
                   <div class="flex-1 min-w-0">
@@ -550,7 +557,18 @@ defineExpose({ fetchQuestions })
         </div>
 
         <div v-else class="space-y-3">
-          <div v-for="q in filteredAndSortedQuestions" :key="q.id" class="bg-white rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow">
+          <div 
+            v-for="q in filteredAndSortedQuestions" 
+            :key="q.id" 
+            class="bg-white rounded-lg shadow-sm border-2 p-4 hover:shadow-md transition-all duration-300"
+            :class="[
+              q.question_type === 'multiple_choice'
+                ? 'border-blue-300 hover:border-blue-400'
+                : q.question_type === 'survey'
+                  ? 'border-emerald-300 hover:border-emerald-400'
+                  : 'border-purple-300 hover:border-purple-400'
+            ]"
+          >
             <div class="flex items-start justify-between">
               <div class="flex-1">
                 <div class="flex items-center gap-2 mb-2">
