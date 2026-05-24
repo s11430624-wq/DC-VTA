@@ -438,7 +438,7 @@ defineExpose({
         <div
           v-for="stat in filteredStats"
           :key="stat.questionId"
-          class="bg-white rounded-2xl shadow-academic border border-slate-200/60 overflow-hidden hover:border-blue-100 transition-smooth"
+          class="bg-white rounded-2xl shadow-academic border-2 border-slate-300/80 overflow-hidden hover:border-blue-300 transition-smooth"
         >
           <!-- Summary header card -->
           <div
@@ -609,24 +609,18 @@ defineExpose({
                     
                     <div class="flex items-center justify-between mt-auto pt-3 border-t border-slate-100 text-xs">
                       <span class="text-[10px] text-slate-400 font-mono font-bold bg-slate-50 px-1.5 py-0.5 rounded">{{ student.studentId }}</span>
-                      
-                      <template v-if="!stat.isShortAnswer && !stat.isSurvey">
+                      <div class="flex items-center gap-2">
                         <span v-if="student.reactionTime != null" class="text-xs font-bold" :class="student.reactionTime < 10 ? 'text-amber-600' : 'text-slate-500'">
                           ⚡ {{ student.reactionTime }} 秒
                         </span>
                         <span v-else class="text-xs text-slate-300">⚡ --</span>
-                      </template>
-                      <template v-else-if="stat.isSurvey">
-                        <span class="text-[10px] text-slate-400 font-semibold">
-                          {{ new Date(student.createdAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) }}
-                        </span>
-                      </template>
-                      <template v-else>
-                        <span v-if="student.status === 'graded'" class="text-xs font-bold text-blue-600">
-                          🎯 {{ student.score }} 分
-                        </span>
-                        <span v-else class="text-xs text-slate-400 font-semibold animate-pulse">⏳ 批改中...</span>
-                      </template>
+                        <template v-if="stat.isShortAnswer">
+                          <span v-if="student.status === 'graded'" class="text-xs font-bold text-blue-600">
+                            🎯 {{ student.score }} 分
+                          </span>
+                          <span v-else class="text-xs text-slate-400 font-semibold animate-pulse">⏳ 批改中...</span>
+                        </template>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -705,7 +699,7 @@ defineExpose({
         <div
           v-for="stat in filteredStats"
           :key="stat.questionId"
-          class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden"
+          class="bg-white rounded-lg shadow-sm border-2 border-gray-300 overflow-hidden"
         >
           <!-- 問題摘要行 -->
           <div
@@ -881,23 +875,18 @@ defineExpose({
                       <span class="text-sm text-gray-500 font-mono">
                         {{ student.studentId }}
                       </span>
-                      <template v-if="!stat.isShortAnswer && !stat.isSurvey">
+                      <div class="flex items-center gap-2">
                         <span v-if="student.reactionTime != null" class="text-sm font-medium" :class="student.reactionTime < 10 ? 'text-amber-600' : 'text-gray-600'">
                           ⚡ {{ student.reactionTime }} 秒
                         </span>
                         <span v-else class="text-sm text-gray-400">⚡ --</span>
-                      </template>
-                      <template v-else-if="stat.isSurvey">
-                        <span class="text-sm text-gray-500">
-                          {{ new Date(student.createdAt).toLocaleString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }) }}
-                        </span>
-                      </template>
-                      <template v-else>
-                        <span v-if="student.status === 'graded'" class="text-sm font-semibold" :class="getScoreColor(student.score)">
-                          {{ student.score }} 分
-                        </span>
-                        <span v-else class="text-sm text-gray-400">尚未批改</span>
-                      </template>
+                        <template v-if="stat.isShortAnswer">
+                          <span v-if="student.status === 'graded'" class="text-sm font-semibold" :class="getScoreColor(student.score)">
+                            {{ student.score }} 分
+                          </span>
+                          <span v-else class="text-sm text-gray-400">尚未批改</span>
+                        </template>
+                      </div>
                     </div>
                   </div>
                 </div>

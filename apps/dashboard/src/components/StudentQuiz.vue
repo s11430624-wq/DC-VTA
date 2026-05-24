@@ -30,7 +30,7 @@ const questionId = ref(null)
 const questionContent = ref('')
 
 /** 題目圖片 URL（選填） */
-const questionImageUrl = ref('')
+const questionImageUrls = ref([])
 
 /** 題目最後發送時間（用於計算反應時間） */
 const questionLastSentAt = ref(null)
@@ -164,7 +164,7 @@ onMounted(async () => {
 /**
  * 從 question_bank 表撈取對應題號的題目內容
  */
-function getQuestionImageUrl(metadata) {
+function getQuestionImageUrls(metadata) {
   const parsed = typeof metadata === 'string' ? (() => {
     try {
       const value = JSON.parse(metadata)
@@ -173,10 +173,13 @@ function getQuestionImageUrl(metadata) {
       return null
     }
   })() : metadata
-  const imageUrl = parsed?.image_url
-  if (typeof imageUrl !== 'string') return ''
-  const normalized = imageUrl.trim()
-  return /^https?:\/\//i.test(normalized) ? encodeURI(normalized) : ''
+  const imageUrls = Array.isArray(parsed?.image_urls) ? parsed.image_urls : []
+  const fallback = typeof parsed?.image_url === 'string' ? [parsed.image_url] : []
+  return [...new Set([...imageUrls, ...fallback])]
+    .filter((url) => typeof url === 'string')
+    .map((url) => url.trim())
+    .filter((url) => /^https?:\/\//i.test(url))
+    .map((url) => encodeURI(url))
 }
 
 function handleImageLoadError(event) {
@@ -199,7 +202,7 @@ async function fetchQuestion(qid) {
 
   // 優先使用 question_text，若無則使用 content
   questionContent.value = data.question_text || data.content || '（題目內容為空）'
-  questionImageUrl.value = getQuestionImageUrl(data.metadata)
+  questionImageUrls.value = getQuestionImageUrls(data.metadata)
   questionLastSentAt.value = data.last_sent_at || null
 }
 
@@ -381,13 +384,16 @@ async function submitAnswer() {
           <p class="text-gray-800 leading-relaxed whitespace-pre-wrap">
             {{ questionContent }}
           </p>
-          <img
-            v-if="questionImageUrl"
-            :src="questionImageUrl"
-            @error="handleImageLoadError"
-            alt="題目圖片"
-            class="mt-4 max-h-80 rounded-lg border border-gray-200 object-contain"
-          />
+          <div v-if="questionImageUrls.length > 0" class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <img
+              v-for="(imageUrl, imageIndex) in questionImageUrls"
+              :key="`student-quiz-image-${imageIndex}`"
+              :src="imageUrl"
+              @error="handleImageLoadError"
+              alt="題目圖片"
+              class="max-h-80 rounded-lg border border-gray-200 object-contain"
+            />
+          </div>
         </section>
 
         <!-- ── 作答區塊 ── -->

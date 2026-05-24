@@ -100,7 +100,7 @@ onMounted(() => {
 
   <div v-else :data-ui-variant="uiVariant" class="min-h-screen transition-smooth">
     <!-- ============================================== -->
-    <!-- Option A: Redesigned UI (Academic Workbench) -->
+    <!-- Option A: Redesigned UI -->
     <!-- ============================================== -->
     <template v-if="uiVariant === 'redesigned'">
       <header class="bg-white/80 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-40 transition-smooth">
@@ -112,7 +112,7 @@ onMounted(() => {
               </div>
               <div class="flex flex-col">
                 <h1 class="text-base sm:text-lg font-bold text-slate-800 tracking-wide font-sans">班級戰情室</h1>
-                <span class="text-[10px] sm:text-xs text-slate-400 font-medium">學者工作台 Academic Workbench</span>
+                <span class="text-[10px] sm:text-xs text-slate-400 font-medium">新版</span>
               </div>
             </div>
             
@@ -131,7 +131,7 @@ onMounted(() => {
                   class="px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md transition-smooth btn-academic-active"
                   :class="uiVariant === 'redesigned' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
                 >
-                  學者新版
+                  新版
                 </button>
               </div>
 
@@ -208,7 +208,7 @@ onMounted(() => {
                 class="flex items-center gap-1 px-2.5 py-1.5 bg-white bg-opacity-20 hover:bg-opacity-35 border border-white border-opacity-30 rounded-lg text-xs font-semibold transition-colors"
               >
                 <Layers class="w-3.5 h-3.5" />
-                <span>切換學者新版</span>
+                <span>切換新版</span>
               </button>
 
               <button

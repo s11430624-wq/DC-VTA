@@ -1050,7 +1050,10 @@ const formatResponseList = (
         const user = usersById.get(response.user_id);
         const displayName = user?.display_name || '未知使用者';
         const studentId = user?.student_id || '無學號';
-        return `${index + 1}. ${displayName} (${studentId}) [選${response.selected_option}]`;
+        const reactionTime = typeof response.reaction_time === 'number' && Number.isFinite(response.reaction_time)
+            ? `${response.reaction_time.toFixed(1)} 秒`
+            : '未記錄';
+        return `${index + 1}. ${displayName} (${studentId})｜${reactionTime} [選${response.selected_option}]`;
     });
 
     return {
@@ -1059,6 +1062,17 @@ const formatResponseList = (
     };
 };
 
+const sortResponsesByReactionTime = (responses: QuizResponse[]) => [...responses].sort((a, b) => {
+    const timeA = typeof a.reaction_time === 'number' && Number.isFinite(a.reaction_time)
+        ? a.reaction_time
+        : Number.POSITIVE_INFINITY;
+    const timeB = typeof b.reaction_time === 'number' && Number.isFinite(b.reaction_time)
+        ? b.reaction_time
+        : Number.POSITIVE_INFINITY;
+    if (timeA !== timeB) return timeA - timeB;
+    return String(a.user_id).localeCompare(String(b.user_id));
+});
+
 const formatCheckResult = async (questionId: number) => {
     const question = await getQuestionById(questionId);
 
@@ -1066,7 +1080,7 @@ const formatCheckResult = async (questionId: number) => {
         return '找不到這個題目';
     }
 
-    const responses = await getResponsesByQuestionId(questionId);
+    const responses = sortResponsesByReactionTime(await getResponsesByQuestionId(questionId));
 
     if (question.question_type === 'short_answer' || question.question_type === 'survey') {
         const gradingLink = buildGradingLink({ questionId, status: 'pending' });
@@ -1088,12 +1102,15 @@ const formatCheckResult = async (questionId: number) => {
             '',
             `👥 已提交人數：${responses.length} 人`,
             ...(question.question_type === 'short_answer' ? [`🔗 批改頁面：${gradingLink}`, ''] : []),
-            ...responses.slice(0, 60).map((response, index) => {
+            ...responses.slice(0, 60).flatMap((response, index) => {
                 const user = usersById.get(response.user_id);
                 const displayName = user?.display_name || '未知使用者';
                 const studentId = user?.student_id || '無學號';
                 const answerText = response.answer_text?.trim() || '（未填寫內容）';
-                return `${index + 1}. ${displayName} (${studentId})\n${answerText}`;
+                const reactionTime = typeof response.reaction_time === 'number' && Number.isFinite(response.reaction_time)
+                    ? `${response.reaction_time.toFixed(1)} 秒`
+                    : '未記錄';
+                return [`${index + 1}. ${displayName} (${studentId})｜${reactionTime}`, answerText, ''];
             }),
         ];
 

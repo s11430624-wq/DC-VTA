@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-05-24
+
+### 1. 過期圖片連結防呆（ephemeral attachments）
+- `/add` 與 `/add_short` 現在會擋下 `cdn.discordapp.com/ephemeral-attachments/...` 圖片連結。
+- 避免把會過期的臨時圖片網址寫進 `question_bank.metadata.image_url`。
+- 提示訊息會引導老師改用一般附件連結或穩定圖床。
+
+### 2. Dashboard 題目圖片上傳能力
+- 題目編輯表單新增「添加圖片」上傳入口，支援直接從電腦上傳。
+- 圖片上傳成功後，會自動回填到題目圖片欄位。
+- 既有手動貼網址流程保留，可混合使用。
+
+### 3. 題目多圖支援
+- 題目 metadata 新增 `image_urls`（多張），並保留 `image_url`（第一張）做相容。
+- 題庫管理、批改頁、學生作答頁都可顯示多張題目圖片。
+- 前端圖片載入失敗時會自動隱藏失敗圖，避免破圖 icon 影響介面。
+
+### 4. 題型擴充：問卷題（Dashboard）
+- Dashboard 新增題目表單加入第三種題型「問卷題」。
+- 問卷題可設定 `allow_repeat_answer`，並以 `question_type='survey'` 儲存。
+- 問卷題不需填選項、正確答案與解釋說明欄位。
+
 ## 2026-05-22
 
 ### 1. PDF 附件解析修正

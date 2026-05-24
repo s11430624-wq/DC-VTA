@@ -35,7 +35,7 @@ const isBatchGrading = ref(false)
 const batchProgress = ref({ current: 0, total: 0 })
 const errorMessage = ref('')
 
-function getQuestionImageUrl(question) {
+function getQuestionImageUrls(question) {
   const metadata = question?.metadata
   const parsed = typeof metadata === 'string' ? (() => {
     try {
@@ -45,10 +45,13 @@ function getQuestionImageUrl(question) {
       return null
     }
   })() : metadata
-  const imageUrl = parsed?.image_url
-  if (typeof imageUrl !== 'string') return ''
-  const normalized = imageUrl.trim()
-  return /^https?:\/\//i.test(normalized) ? encodeURI(normalized) : ''
+  const imageUrls = Array.isArray(parsed?.image_urls) ? parsed.image_urls : []
+  const fallback = typeof parsed?.image_url === 'string' ? [parsed.image_url] : []
+  return [...new Set([...imageUrls, ...fallback])]
+    .filter((url) => typeof url === 'string')
+    .map((url) => url.trim())
+    .filter((url) => /^https?:\/\//i.test(url))
+    .map((url) => encodeURI(url))
 }
 
 function handleImageLoadError(event) {
@@ -461,16 +464,19 @@ defineExpose({ fetchResponses })
                 </div>
 
                 <!-- Question details -->
-                <div v-if="selectedResponse.question_bank?.content || getQuestionImageUrl(selectedResponse.question_bank)">
+                <div v-if="selectedResponse.question_bank?.content || getQuestionImageUrls(selectedResponse.question_bank).length > 0">
                   <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5"><Eye class="w-4 h-4 text-slate-400" /> 📋 題目內容</h4>
                   <div v-if="selectedResponse.question_bank?.content" class="p-4 bg-slate-50 rounded-xl text-slate-700 text-sm leading-relaxed font-semibold border border-slate-100">{{ selectedResponse.question_bank.content }}</div>
-                  <img
-                    v-if="getQuestionImageUrl(selectedResponse.question_bank)"
-                    :src="getQuestionImageUrl(selectedResponse.question_bank)"
-                    @error="handleImageLoadError"
-                    alt="題目圖片"
-                    class="mt-3 max-h-60 rounded-xl border border-slate-200 object-contain shadow-sm"
-                  />
+                  <div v-if="getQuestionImageUrls(selectedResponse.question_bank).length > 0" class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <img
+                      v-for="(imageUrl, imageIndex) in getQuestionImageUrls(selectedResponse.question_bank)"
+                      :key="`grading-redesigned-${selectedResponse.id}-${imageIndex}`"
+                      :src="imageUrl"
+                      @error="handleImageLoadError"
+                      alt="題目圖片"
+                      class="max-h-60 rounded-xl border border-slate-200 object-contain shadow-sm"
+                    />
+                  </div>
                 </div>
 
                 <!-- Student answers -->
@@ -683,16 +689,19 @@ defineExpose({ fetchResponses })
                   <span v-else class="px-2.5 py-1 text-xs font-bold bg-amber-100 text-amber-700 rounded-full border border-amber-200">待批改</span>
                 </div>
 
-                <div v-if="selectedResponse.question_bank?.content || getQuestionImageUrl(selectedResponse.question_bank)">
+                <div v-if="selectedResponse.question_bank?.content || getQuestionImageUrls(selectedResponse.question_bank).length > 0">
                   <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">📋 題目內容</h4>
                   <div v-if="selectedResponse.question_bank?.content" class="p-4 bg-gray-50 rounded-lg text-gray-700 whitespace-pre-wrap text-sm leading-relaxed">{{ selectedResponse.question_bank.content }}</div>
-                  <img
-                    v-if="getQuestionImageUrl(selectedResponse.question_bank)"
-                    :src="getQuestionImageUrl(selectedResponse.question_bank)"
-                    @error="handleImageLoadError"
-                    alt="題目圖片"
-                    class="mt-3 max-h-80 rounded-lg border border-gray-200 object-contain"
-                  />
+                  <div v-if="getQuestionImageUrls(selectedResponse.question_bank).length > 0" class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <img
+                      v-for="(imageUrl, imageIndex) in getQuestionImageUrls(selectedResponse.question_bank)"
+                      :key="`grading-classic-${selectedResponse.id}-${imageIndex}`"
+                      :src="imageUrl"
+                      @error="handleImageLoadError"
+                      alt="題目圖片"
+                      class="max-h-80 rounded-lg border border-gray-200 object-contain"
+                    />
+                  </div>
                 </div>
                 <div><h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">✍️ 學生作答</h4><div class="p-4 bg-blue-50/60 rounded-lg text-gray-800 whitespace-pre-wrap text-sm leading-relaxed border border-blue-100">{{ selectedResponse.answer_text || '（無作答內容）' }}</div></div>
                 <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">

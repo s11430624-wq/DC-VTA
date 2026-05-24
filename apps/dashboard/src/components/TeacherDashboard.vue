@@ -52,7 +52,7 @@ const leaderboardFeedRef = ref(null)
 const leaderboardRankRef = ref(null)
 const gradingRef = ref(null)
 
-function getQuestionImageUrl(question) {
+function getQuestionImageUrls(question) {
   const metadata = question?.metadata
   const parsed = typeof metadata === 'string' ? (() => {
     try {
@@ -62,10 +62,13 @@ function getQuestionImageUrl(question) {
       return null
     }
   })() : metadata
-  const imageUrl = parsed?.image_url
-  if (typeof imageUrl !== 'string') return ''
-  const normalized = imageUrl.trim()
-  return /^https?:\/\//i.test(normalized) ? encodeURI(normalized) : ''
+  const imageUrls = Array.isArray(parsed?.image_urls) ? parsed.image_urls : []
+  const fallback = typeof parsed?.image_url === 'string' ? [parsed.image_url] : []
+  return [...new Set([...imageUrls, ...fallback])]
+    .filter((url) => typeof url === 'string')
+    .map((url) => url.trim())
+    .filter((url) => /^https?:\/\//i.test(url))
+    .map((url) => encodeURI(url))
 }
 
 function handleImageLoadError(event) {
@@ -189,7 +192,7 @@ defineExpose({ fetchQuestions })
 <template>
   <div class="w-full">
     <!-- ============================================== -->
-    <!-- Option A: Redesigned UI (Academic Workbench) -->
+    <!-- Option A: Redesigned UI -->
     <!-- ============================================== -->
     <div v-if="uiVariant === 'redesigned'" class="w-full pb-20 lg:pb-0">
       <div class="flex flex-col lg:flex-row gap-6 relative">
@@ -279,7 +282,7 @@ defineExpose({ fetchQuestions })
               </nav>
               
               <div class="pt-5 border-t border-slate-100 text-xs text-slate-400 font-medium">
-                學者工作台 v1.0.0
+                新版 v1.0.0
               </div>
             </div>
           </div>
@@ -395,13 +398,16 @@ defineExpose({ fetchQuestions })
                     </div>
                     <p class="text-slate-800 text-sm sm:text-base font-semibold mb-3 leading-relaxed break-words">{{ q.content || '（無題目描述，僅提供選項）' }}</p>
                     
-                    <img
-                      v-if="getQuestionImageUrl(q)"
-                      :src="getQuestionImageUrl(q)"
-                      @error="handleImageLoadError"
-                      alt="題目圖片"
-                      class="mb-4 max-h-48 rounded-xl border border-slate-200/70 object-contain shadow-sm"
-                    />
+                    <div v-if="getQuestionImageUrls(q).length > 0" class="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <img
+                        v-for="(imageUrl, imageIndex) in getQuestionImageUrls(q)"
+                        :key="`${q.id}-img-redesigned-${imageIndex}`"
+                        :src="imageUrl"
+                        @error="handleImageLoadError"
+                        alt="題目圖片"
+                        class="max-h-48 rounded-xl border border-slate-200/70 object-contain shadow-sm"
+                      />
+                    </div>
                     
                     <!-- Options for multiple choice -->
                     <div v-if="q.metadata?.options" class="flex flex-col sm:flex-row flex-wrap gap-2 mb-3.5">
@@ -555,13 +561,16 @@ defineExpose({ fetchQuestions })
                   <span v-else class="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded font-medium">簡答題</span>
                 </div>
                 <p class="text-gray-800 mb-2">{{ q.content || '（無題目描述，僅提供選項）' }}</p>
-                <img
-                  v-if="getQuestionImageUrl(q)"
-                  :src="getQuestionImageUrl(q)"
-                  @error="handleImageLoadError"
-                  alt="題目圖片"
-                  class="mb-3 max-h-48 rounded-lg border border-gray-200 object-contain"
-                />
+                <div v-if="getQuestionImageUrls(q).length > 0" class="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <img
+                    v-for="(imageUrl, imageIndex) in getQuestionImageUrls(q)"
+                    :key="`${q.id}-img-classic-${imageIndex}`"
+                    :src="imageUrl"
+                    @error="handleImageLoadError"
+                    alt="題目圖片"
+                    class="max-h-48 rounded-lg border border-gray-200 object-contain"
+                  />
+                </div>
                 <div class="flex flex-wrap gap-2 mb-2">
                   <span v-for="(option, index) in q.metadata?.options || []" :key="index" class="text-sm px-2 py-1 rounded" :class="String.fromCharCode(65 + index) === q.metadata?.correct_answer ? 'bg-green-100 text-green-700 font-semibold' : 'bg-gray-100 text-gray-600'">{{ String.fromCharCode(65 + index) }}: {{ option }}</span>
                 </div>
