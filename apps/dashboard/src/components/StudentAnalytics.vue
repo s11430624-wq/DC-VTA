@@ -24,9 +24,11 @@ const availableClasses = ref([]) // 所有可用的分類 (Class Names)
 
 // 儲存所有人的「原始」答題簡要紀錄
 const allStudentRawResponses = ref(new Map())
+const classQuestionLookup = ref(new Map())
 
 // 儲存學生「去過」哪些群組
 const studentGroupMembership = ref(new Map())
+const usingRosterFallback = ref(false)
 
 const uiVariant = inject('uiVariant', ref('classic'))
 
@@ -63,7 +65,9 @@ async function fetchStudents() {
   if (!selectedCategory.value) {
     students.value = []
     allStudentRawResponses.value = new Map()
+    classQuestionLookup.value = new Map()
     studentGroupMembership.value = new Map() // Still tracking for backwards-compatibility or can be repurposed
+    usingRosterFallback.value = false
     return
   }
 
@@ -78,6 +82,8 @@ async function fetchStudents() {
 
     if (classUsersError) throw classUsersError
     const classUserIds = new Set((classUsers || []).map(u => u.user_id))
+    const hasClassRoster = classUserIds.size > 0
+    usingRosterFallback.value = !hasClassRoster
 
     // 再抓這個班級分類的作答紀錄，回填到每位學生
     const { data: rawData, error: rawError } = await supabase
@@ -90,10 +96,11 @@ async function fetchStudents() {
     const rawResponses = new Map()
     const membership = new Map()
     const userIdsInGroup = new Set()
+    const questionIdsInClass = new Set()
     
     rawData.forEach(r => {
-      // 只保留本班名冊學生，避免把其他班級作答混進來
-      if (!classUserIds.has(r.user_id)) {
+      // 名冊存在時才套用嚴格班級過濾；否則回退為舊模式避免整頁空白
+      if (hasClassRoster && !classUserIds.has(r.user_id)) {
         return
       }
       // Just keep track of where they answered it, though no longer strictly needed for category sorting
@@ -107,6 +114,9 @@ async function fetchStudents() {
 
       if (!rawResponses.has(r.user_id)) {
         rawResponses.set(r.user_id, [])
+      }
+      if (r.question_id != null) {
+        questionIdsInClass.add(r.question_id)
       }
       rawResponses.get(r.user_id).push({
         question_id: r.question_id,
@@ -123,8 +133,21 @@ async function fetchStudents() {
     allStudentRawResponses.value = rawResponses
     studentGroupMembership.value = membership
 
-    // 以班級名冊為主，並補上「有作答但未掛 class_name」的歷史學生，避免資料斷層
-    const rosterMap = new Map((classUsers || []).map(u => [u.user_id, u]))
+    // 建立本班題目索引，供「缺作答題目清單」顯示題幹
+    if (questionIdsInClass.size > 0) {
+      const { data: questionsData, error: questionsError } = await supabase
+        .from('question_bank')
+        .select('id, content, category')
+        .in('id', Array.from(questionIdsInClass))
+        .eq('category', selectedCategory.value)
+      if (questionsError) throw questionsError
+      classQuestionLookup.value = new Map((questionsData || []).map(q => [q.id, q]))
+    } else {
+      classQuestionLookup.value = new Map()
+    }
+
+    // 有名冊時以名冊為主；沒名冊時回退為「有作答者名冊」
+    const rosterMap = new Map((hasClassRoster ? classUsers : []).map(u => [u.user_id, u]))
     const missingResponderIds = Array.from(userIdsInGroup).filter(id => !rosterMap.has(id))
     if (missingResponderIds.length > 0) {
       const { data: fallbackUsers, error: fallbackUsersError } = await supabase
@@ -396,6 +419,23 @@ const detailOverallAccuracy = computed(() => {
 const detailLastActive = computed(() => {
   if (detailTotalAttempted.value === 0) return null
   return new Date(studentResponses.value[0].created_at).toLocaleString('zh-TW', { hour12: false })
+})
+
+const detailMissingQuestions = computed(() => {
+  if (!selectedStudentId.value) return []
+  const myResponses = allStudentRawResponses.value.get(selectedStudentId.value) || []
+  const answeredIds = new Set(myResponses.map(r => r.question_id).filter(id => id != null))
+  const missing = []
+  expectedQuestionIds.value.forEach(qid => {
+    if (!answeredIds.has(qid)) {
+      const q = classQuestionLookup.value.get(qid)
+      missing.push({
+        id: qid,
+        content: q?.content || '（題幹不可用）'
+      })
+    }
+  })
+  return missing.sort((a, b) => a.id - b.id)
 })
 
 // 🔥 計算平均反應時間
@@ -967,6 +1007,22 @@ onMounted(() => {
             </div>
           </div>
 
+          <div v-if="detailMissingQuestions.length > 0" class="bg-amber-50/40 p-5 rounded-2xl border border-amber-200/70">
+            <h3 class="text-sm sm:text-base font-bold text-amber-800 mb-3 flex items-center gap-2">
+              <FileText class="w-4 h-4" /> 未作答題目（{{ detailMissingQuestions.length }}）
+            </h3>
+            <div class="space-y-2 max-h-48 overflow-auto pr-1">
+              <div
+                v-for="q in detailMissingQuestions"
+                :key="q.id"
+                class="text-xs sm:text-sm text-amber-900 bg-white/80 border border-amber-200 rounded-lg px-3 py-2"
+              >
+                <span class="font-mono font-bold text-amber-700 mr-2">#{{ q.id }}</span>
+                <span class="font-medium">{{ q.content }}</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Subject progression list -->
           <div class="bg-white p-5 rounded-2xl shadow-academic border border-slate-200/60">
             <h3 class="text-sm sm:text-base font-bold text-slate-800 mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
@@ -1394,6 +1450,7 @@ onMounted(() => {
                   <span class="text-xl font-bold text-gray-600 font-mono">{{ studentTiers.unsubmitted.length }}</span>
                   <span class="text-[10px] font-medium text-gray-400">人</span>
                 </div>
+                <div class="text-[9px] text-gray-400 font-medium">仍有應答題目未提交</div>
               </div>
             </div>
           </div>
@@ -1603,6 +1660,22 @@ onMounted(() => {
               </div>
               <div class="text-sm font-medium text-gray-800 mt-2 line-clamp-2">
                 {{ detailLastActive || '尚未有活動紀錄' }}
+              </div>
+            </div>
+          </div>
+
+          <div v-if="detailMissingQuestions.length > 0" class="bg-yellow-50 p-5 rounded-lg border border-yellow-200">
+            <h3 class="text-base font-bold text-yellow-800 mb-3 flex items-center gap-2">
+              <FileText class="w-4 h-4" /> 未作答題目（{{ detailMissingQuestions.length }}）
+            </h3>
+            <div class="space-y-2 max-h-44 overflow-auto pr-1">
+              <div
+                v-for="q in detailMissingQuestions"
+                :key="q.id"
+                class="text-sm text-yellow-900 bg-white border border-yellow-200 rounded px-3 py-2"
+              >
+                <span class="font-mono font-bold text-yellow-700 mr-2">#{{ q.id }}</span>
+                <span>{{ q.content }}</span>
               </div>
             </div>
           </div>
