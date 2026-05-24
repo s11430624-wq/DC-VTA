@@ -63,7 +63,16 @@ function getQuestionImageUrl(question) {
     }
   })() : metadata
   const imageUrl = parsed?.image_url
-  return typeof imageUrl === 'string' && /^https?:\/\//i.test(imageUrl) ? imageUrl : ''
+  if (typeof imageUrl !== 'string') return ''
+  const normalized = imageUrl.trim()
+  return /^https?:\/\//i.test(normalized) ? encodeURI(normalized) : ''
+}
+
+function handleImageLoadError(event) {
+  const target = event?.target
+  if (!(target instanceof HTMLImageElement)) return
+  console.warn('Image load failed:', target.src)
+  target.style.display = 'none'
 }
 
 const filteredAndSortedQuestions = computed(() => {
@@ -389,6 +398,7 @@ defineExpose({ fetchQuestions })
                     <img
                       v-if="getQuestionImageUrl(q)"
                       :src="getQuestionImageUrl(q)"
+                      @error="handleImageLoadError"
                       alt="題目圖片"
                       class="mb-4 max-h-48 rounded-xl border border-slate-200/70 object-contain shadow-sm"
                     />
@@ -548,6 +558,7 @@ defineExpose({ fetchQuestions })
                 <img
                   v-if="getQuestionImageUrl(q)"
                   :src="getQuestionImageUrl(q)"
+                  @error="handleImageLoadError"
                   alt="題目圖片"
                   class="mb-3 max-h-48 rounded-lg border border-gray-200 object-contain"
                 />

@@ -174,7 +174,16 @@ function getQuestionImageUrl(metadata) {
     }
   })() : metadata
   const imageUrl = parsed?.image_url
-  return typeof imageUrl === 'string' && /^https?:\/\//i.test(imageUrl) ? imageUrl : ''
+  if (typeof imageUrl !== 'string') return ''
+  const normalized = imageUrl.trim()
+  return /^https?:\/\//i.test(normalized) ? encodeURI(normalized) : ''
+}
+
+function handleImageLoadError(event) {
+  const target = event?.target
+  if (!(target instanceof HTMLImageElement)) return
+  console.warn('Image load failed:', target.src)
+  target.style.display = 'none'
 }
 
 async function fetchQuestion(qid) {
@@ -375,6 +384,7 @@ async function submitAnswer() {
           <img
             v-if="questionImageUrl"
             :src="questionImageUrl"
+            @error="handleImageLoadError"
             alt="題目圖片"
             class="mt-4 max-h-80 rounded-lg border border-gray-200 object-contain"
           />
