@@ -893,11 +893,19 @@ const getStringMetadata = (metadata: QuestionMetadata | null, key: string) => {
 };
 
 const hasImageExtension = (url: string) => /\.(?:png|jpe?g|gif|webp)(?:\?.*)?$/i.test(url);
+const isDiscordEphemeralAttachmentUrl = (url: string) => /cdn\.discordapp\.com\/ephemeral-attachments\//i.test(url);
 
 const getQuestionImageAttachmentUrl = (interaction: ChatInputCommandInteraction) => {
     const attachment = interaction.options.getAttachment('image');
     if (!attachment) {
         return { ok: true as const, imageUrl: null };
+    }
+
+    if (isDiscordEphemeralAttachmentUrl(attachment.url)) {
+        return {
+            ok: false as const,
+            error: '這張圖片是 Discord 臨時附件（ephemeral），連結會過期。請改用一般附件連結後再上傳。',
+        };
     }
 
     if (attachment.contentType?.startsWith('image/') || hasImageExtension(attachment.url)) {

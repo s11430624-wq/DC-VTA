@@ -27,8 +27,10 @@ const formData = ref({
 })
 
 const loading = ref(false)
+const uploadingImage = ref(false)
 const error = ref('')
 const groups = ref([])
+const QUESTION_IMAGE_BUCKET = (import.meta.env.VITE_QUESTION_IMAGE_BUCKET || 'question-images').trim()
 
 // 是否為編輯模式
 const isEditMode = computed(() => !!props.question)
@@ -208,6 +210,70 @@ async function handleSubmit() {
   }
 }
 
+function sanitizeFileName(name) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+}
+
+async function handleImageFileChange(event) {
+  const input = event?.target
+  const file = input?.files?.[0]
+  if (!file) return
+
+  const isImage = file.type.startsWith('image/')
+  if (!isImage) {
+    error.value = '只支援圖片檔（PNG、JPG、GIF、WEBP）。'
+    input.value = ''
+    return
+  }
+
+  const maxBytes = 10 * 1024 * 1024
+  if (file.size > maxBytes) {
+    error.value = '圖片大小不可超過 10MB。'
+    input.value = ''
+    return
+  }
+
+  error.value = ''
+  uploadingImage.value = true
+
+  try {
+    const extension = (file.name.split('.').pop() || 'png').toLowerCase()
+    const baseName = sanitizeFileName(file.name.replace(/\.[^.]+$/, ''))
+    const filePath = `question-images/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${baseName}.${extension}`
+
+    const { error: uploadError } = await supabase
+      .storage
+      .from(QUESTION_IMAGE_BUCKET)
+      .upload(filePath, file, {
+        cacheControl: '3600',
+        upsert: false
+      })
+
+    if (uploadError) {
+      throw uploadError
+    }
+
+    const { data } = supabase
+      .storage
+      .from(QUESTION_IMAGE_BUCKET)
+      .getPublicUrl(filePath)
+
+    if (!data?.publicUrl) {
+      throw new Error('無法取得公開圖片網址')
+    }
+
+    formData.value.imageUrl = data.publicUrl
+  } catch (err) {
+    error.value = `圖片上傳失敗：${err.message || '請確認 Storage bucket 與權限設定'}`
+  } finally {
+    uploadingImage.value = false
+    input.value = ''
+  }
+}
+
 function handleCancel() {
   emit('cancel')
 }
@@ -289,9 +355,23 @@ function handleCancel() {
           type="url"
           placeholder="https://..."
           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition"
-          :disabled="loading"
+          :disabled="loading || uploadingImage"
         />
-        <p class="mt-1 text-xs text-gray-400">Discord 上傳圖片建立的題目會自動帶入；網頁端可貼圖片網址。</p>
+        <div class="mt-2 flex flex-col sm:flex-row sm:items-center gap-2">
+          <label class="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 cursor-pointer text-sm text-gray-700 transition-colors"
+                 :class="{ 'opacity-60 cursor-not-allowed': loading || uploadingImage }">
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+              class="hidden"
+              :disabled="loading || uploadingImage"
+              @change="handleImageFileChange"
+            />
+            <span>{{ uploadingImage ? '上傳中...' : '從電腦選擇圖片' }}</span>
+          </label>
+          <span class="text-xs text-gray-400">支援 PNG/JPG/GIF/WEBP，最大 10MB</span>
+        </div>
+        <p class="mt-1 text-xs text-gray-400">可直接貼網址，或用上方按鈕上傳後自動填入。</p>
       </div>
 
       <!-- ========== 選擇題區塊 ========== -->
