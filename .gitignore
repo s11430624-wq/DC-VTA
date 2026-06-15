@@ -6,3 +6,5 @@ node_modules/
 dist/
 apps/*/node_modules/
 apps/*/dist/
+apps/*/.vercel/
+apps/*/package-lock.json

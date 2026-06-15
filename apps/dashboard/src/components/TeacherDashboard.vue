@@ -216,6 +216,21 @@ defineExpose({ fetchQuestions })
                 <span>{{ tab.label }}</span>
               </button>
             </nav>
+            <div class="h-px bg-slate-150 my-4"></div>
+            <div class="px-3 py-1 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">自動批改系統</div>
+            <a
+              href="https://criterion-ai.vercel.app/"
+              target="_blank"
+              class="w-full flex items-center justify-between gap-2 px-4 py-3 rounded-xl font-semibold text-sm transition-smooth text-emerald-600 bg-emerald-50 hover:bg-emerald-100/80 hover:text-emerald-700 btn-academic-active shadow-sm"
+            >
+              <div class="flex items-center gap-3">
+                <ClipboardCheck class="w-4 h-4 text-emerald-500 shrink-0" />
+                <span>CriterionAI 系統</span>
+              </div>
+              <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"></path>
+              </svg>
+            </a>
           </div>
         </aside>
 
@@ -279,6 +294,21 @@ defineExpose({ fetchQuestions })
                   <component :is="tab.icon" class="w-5 h-5" />
                   <span>{{ tab.label }}</span>
                 </button>
+
+                <div class="h-px bg-slate-100 my-4 shrink-0"></div>
+                <a
+                  href="https://criterion-ai.vercel.app/"
+                  target="_blank"
+                  class="w-full flex items-center justify-between gap-3 px-4 py-3.5 rounded-xl font-bold transition-smooth text-sm text-emerald-600 bg-emerald-50 hover:bg-emerald-100 btn-academic-active text-left"
+                >
+                  <div class="flex items-center gap-3.5">
+                    <ClipboardCheck class="w-5 h-5 text-emerald-500 shrink-0" />
+                    <span>CriterionAI 系統</span>
+                  </div>
+                  <svg class="w-4 h-4 text-emerald-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"></path>
+                  </svg>
+                </a>
               </nav>
               
               <div class="pt-5 border-t border-slate-100 text-xs text-slate-400 font-medium">
@@ -526,6 +556,13 @@ defineExpose({ fetchQuestions })
           <button @click="handleTabChange('discord-settings')" :class="['flex-1 px-3 sm:px-6 py-3 sm:py-4 text-center font-medium transition-colors border-b-2', currentTab === 'discord-settings' ? 'border-slate-700 text-slate-700' : 'border-transparent text-gray-500 hover:text-gray-700']">
             <div class="flex items-center justify-center gap-1 sm:gap-2"><ServerCog class="w-4 h-4 sm:w-5 sm:h-5" /><span class="text-sm sm:text-base whitespace-nowrap">Discord 設定</span></div>
           </button>
+          <a href="https://criterion-ai.vercel.app/" target="_blank" class="flex-1 px-3 sm:px-6 py-3 sm:py-4 text-center font-medium transition-colors border-b-2 border-transparent text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50/50 flex items-center justify-center gap-1 sm:gap-2">
+            <ClipboardCheck class="w-4 h-4 sm:w-5 sm:h-5 text-emerald-500" />
+            <span class="text-sm sm:text-base whitespace-nowrap">CriterionAI 系統</span>
+            <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0 inline" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"></path>
+            </svg>
+          </a>
         </div>
       </div>
 
