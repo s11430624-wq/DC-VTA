@@ -6,12 +6,14 @@ const GOOGLE_SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
 const DEFAULT_MAX_OUTPUT_TOKENS = Number(process.env.AI_GRADING_MAX_OUTPUT_TOKENS || 1024)
 
 function createGoogleAuth() {
+  const projectId = process.env.GCP_PROJECT_ID
   const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
   if (credentialsJson) {
     try {
       const normalizedCredentialsJson = String(credentialsJson).replace(/^\uFEFF+/, '').trim()
       const credentials = JSON.parse(normalizedCredentialsJson)
       return new GoogleAuth({
+        projectId,
         scopes: GOOGLE_SCOPES,
         credentials,
       })
@@ -21,6 +23,7 @@ function createGoogleAuth() {
   }
 
   return new GoogleAuth({
+    projectId,
     scopes: GOOGLE_SCOPES,
   })
 }
