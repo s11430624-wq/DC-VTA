@@ -9,7 +9,8 @@ function createGoogleAuth() {
   const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
   if (credentialsJson) {
     try {
-      const credentials = JSON.parse(credentialsJson)
+      const normalizedCredentialsJson = String(credentialsJson).replace(/^\uFEFF+/, '').trim()
+      const credentials = JSON.parse(normalizedCredentialsJson)
       return new GoogleAuth({
         scopes: GOOGLE_SCOPES,
         credentials,
