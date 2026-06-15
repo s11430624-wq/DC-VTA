@@ -55,17 +55,19 @@ import { getCommandAuditChannelIdForGuild, getTeacherLogChannelIdForGuild, upser
 import { ensureDiscordChannelGroup, ensureGroupMember, setCurrentQuestionForGroup } from './services/groupService';
 import { generateImageFromPrompt } from './services/imageService';
 import { generateModelText } from './services/llmService';
-import { createMultipleChoiceQuestion, createShortAnswerQuestion, createSurveyQuestion, getQuestionById, getQuestionImageUrl, getRecentQuestions } from './services/questionService';
+import { createMultipleChoiceQuestion, createShortAnswerQuestion, createSurveyQuestion, getQuestionById, getQuestionImageUrl, getQuestionsByIds, getRecentQuestions } from './services/questionService';
 import { buildStudioMemoryEntries, runStudioTask } from './services/studioService';
 import {
     getExistingResponse,
     getAllQuizResponses,
     getPendingQuizResponses,
     getQuizResponsesByGroupId,
+    getRecentQuizResponsesByUserId,
     getResponsesByQuestionId,
     getUserQuizStats,
     isRankEligibleResponse,
     QuizResponse,
+    formatRecentHistoryLines,
     upsertQuizResponse,
 } from './services/quizService';
 import { getUserByDiscordId, getUsersByIds, linkStudent, UserRecord } from './services/userService';
@@ -600,7 +602,7 @@ const commands = [
     },
     {
         name: 'me',
-        description: '查詢我的綁定資料',
+        description: '查詢我的資料、統計與最近 10 筆作答紀錄',
     },
     {
         name: 'list',
@@ -2780,7 +2782,7 @@ client.on('interactionCreate', async (interaction) => {
                 '`/help` - 顯示此訊息',
                 '`/image prompt` - 生成圖片',
                 '`/link student_id name` - 綁定學號',
-                '`/me` - 查詢自己的綁定資料',
+                '`/me` - 查詢自己的資料、統計與最近 10 筆作答紀錄',
                 '`/rank limit` - 顯示目前班級伺服器的排行榜',
                 '`/poll_create question options [duration_hours] [multi_select]` - 建立原生投票（options 用 | 分隔）',
                 '`/ask prompt` - 向助教提問；可做個人診斷、弱點整理、複習建議與一般問答',
@@ -3065,9 +3067,29 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
+            const stats = await getUserQuizStats(chatInteraction.user.id);
+            const recentResponses = await getRecentQuizResponsesByUserId(chatInteraction.user.id, 10);
+            const recentQuestions = await getQuestionsByIds(
+                Array.from(new Set(recentResponses.map((response) => response.question_id))),
+            );
+            const historyLines = formatRecentHistoryLines(recentResponses, recentQuestions, 10);
+
             await safeReply(
                 chatInteraction,
-                `👤 我的資料\n姓名：${user.display_name ?? '未設定'}\n學號：${user.student_id ?? '未設定'}`,
+                [
+                    '👤 我的資料',
+                    `姓名：${user.display_name ?? '未設定'}`,
+                    `學號：${user.student_id ?? '未設定'}`,
+                    '',
+                    '📊 我的統計',
+                    `累積作答：${stats.totalAnswered}`,
+                    `答對：${stats.correctCount}`,
+                    `答錯：${stats.wrongCount}`,
+                    `答對率：${stats.accuracyPercent}%`,
+                    '',
+                    '🕘 最近 10 筆作答紀錄',
+                    ...(historyLines.length > 0 ? historyLines : ['目前還沒有作答紀錄']),
+                ].join('\n'),
                 true,
             );
             return;
