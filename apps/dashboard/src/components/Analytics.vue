@@ -817,8 +817,8 @@ defineExpose({
           v-model="sortBy"
           class="px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-smooth text-sm font-semibold text-slate-700 shadow-academic touch-target"
         >
-          <option value="latest">⚡ 最近發送 (Latest Sent)</option>
-          <option value="oldest">⏳ 最久以前 (Oldest Sent)</option>
+          <option value="latest">最近發送 (Latest Sent)</option>
+          <option value="oldest">最久以前 (Oldest Sent)</option>
           <option value="hardest">🔥 難易度排序 (Hardest)</option>
         </select>
       </div>

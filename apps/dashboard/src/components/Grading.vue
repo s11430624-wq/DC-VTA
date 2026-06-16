@@ -375,14 +375,14 @@ defineExpose({ fetchResponses })
                 class="flex-1 py-2.5 text-xs sm:text-sm font-bold text-center transition-smooth rounded-xl touch-target btn-academic-active" 
                 :class="currentTab === 'pending' ? 'text-blue-600 bg-white shadow-sm' : 'text-slate-500 hover:text-slate-800'"
               >
-                📋 待批改
+                待批改
               </button>
               <button 
                 @click="switchTab('graded')" 
                 class="flex-1 py-2.5 text-xs sm:text-sm font-bold text-center transition-smooth rounded-xl touch-target btn-academic-active" 
                 :class="currentTab === 'graded' ? 'text-emerald-700 bg-white shadow-sm' : 'text-slate-500 hover:text-slate-800'"
               >
-                ✅ 已批改
+                已批改
               </button>
             </div>
 
@@ -398,7 +398,6 @@ defineExpose({ fetchResponses })
                   <span class="relative z-10 text-xs">AI 一鍵自動批改中 ({{ batchProgress.current }}/{{ batchProgress.total }})</span>
                 </template>
                 <template v-else>
-                  <span class="text-base relative z-10">🪄</span>
                   <span class="text-xs relative z-10">AI 一鍵全自動批改</span>
                 </template>
               </button>
@@ -465,7 +464,7 @@ defineExpose({ fetchResponses })
 
                 <!-- Question details -->
                 <div v-if="selectedResponse.question_bank?.content || getQuestionImageUrls(selectedResponse.question_bank).length > 0">
-                  <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5"><Eye class="w-4 h-4 text-slate-400" /> 📋 題目內容</h4>
+                  <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5"><Eye class="w-4 h-4 text-slate-400" /> 題目內容</h4>
                   <div v-if="selectedResponse.question_bank?.content" class="p-4 bg-slate-50 rounded-xl text-slate-700 text-sm leading-relaxed font-semibold border border-slate-100">{{ selectedResponse.question_bank.content }}</div>
                   <div v-if="getQuestionImageUrls(selectedResponse.question_bank).length > 0" class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <img
@@ -481,7 +480,7 @@ defineExpose({ fetchResponses })
 
                 <!-- Student answers -->
                 <div>
-                  <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5"><FileText class="w-4 h-4 text-blue-500" /> ✍️ 學生作答內容</h4>
+                  <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5"><FileText class="w-4 h-4 text-blue-500" /> 學生作答內容</h4>
                   <div class="p-4 bg-blue-50/50 rounded-xl text-slate-800 text-sm font-semibold leading-relaxed border border-blue-100">{{ selectedResponse.answer_text || '（無作答內容）' }}</div>
                 </div>
 
@@ -504,8 +503,8 @@ defineExpose({ fetchResponses })
                 <!-- Score Rubrics -->
                 <div>
                   <div class="flex items-center justify-between mb-2">
-                    <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5"><Award class="w-4 h-4 text-purple-600" /> 📐 評分細則</h4>
-                    <button @click="updateRubric" :disabled="isUpdatingRubric" class="flex items-center gap-1.5 px-3 py-1 bg-purple-50 text-purple-700 border border-purple-100 hover:bg-purple-100 rounded-lg text-xs font-bold transition-smooth btn-academic-active disabled:opacity-50 touch-target"><Loader2 v-if="isUpdatingRubric" class="w-3.5 h-3.5 animate-spin" /><span v-else>💾</span>{{ isUpdatingRubric ? '更新中' : '同步至題庫' }}</button>
+                    <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5"><Award class="w-4 h-4 text-purple-600" /> 評分細則</h4>
+                    <button @click="updateRubric" :disabled="isUpdatingRubric" class="flex items-center gap-1.5 px-3 py-1 bg-purple-50 text-purple-700 border border-purple-100 hover:bg-purple-100 rounded-lg text-xs font-bold transition-smooth btn-academic-active disabled:opacity-50 touch-target"><Loader2 v-if="isUpdatingRubric" class="w-3.5 h-3.5 animate-spin" />{{ isUpdatingRubric ? '更新中' : '同步至題庫' }}</button>
                   </div>
                   <textarea v-model="editableRubric" rows="3" placeholder="請輸入評分標準..." class="w-full px-3.5 py-2.5 border border-purple-100 rounded-xl bg-purple-50/20 focus:ring-2 focus:ring-purple-500/10 focus:border-purple-400 outline-none transition-smooth resize-none text-sm text-slate-700 font-semibold leading-relaxed shadow-sm"></textarea>
                 </div>
@@ -533,9 +532,9 @@ defineExpose({ fetchResponses })
                 </div>
 
                 <div class="flex items-center gap-3 pt-1">
-                  <button @click="handleAIAssist" :disabled="isAILoading" class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-xl hover:shadow-md transition-smooth font-bold text-sm btn-academic-active touch-target disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"><Loader2 v-if="isAILoading" class="w-4 h-4 animate-spin" /><Bot v-else class="w-4 h-4" />{{ isAILoading ? 'AI 分析評估中...' : '🤖 AI 輔助批改' }}</button>
+                  <button @click="handleAIAssist" :disabled="isAILoading" class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-xl hover:shadow-md transition-smooth font-bold text-sm btn-academic-active touch-target disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"><Loader2 v-if="isAILoading" class="w-4 h-4 animate-spin" /><Bot v-else class="w-4 h-4" />{{ isAILoading ? 'AI 分析評估中...' : 'AI 輔助批改' }}</button>
                   
-                  <button @click="submitGrading" :disabled="isSubmitting || score === null || score === ''" class="flex items-center gap-2 px-5 py-2.5 text-white rounded-xl transition-smooth font-bold text-sm shadow-md disabled:opacity-50 disabled:cursor-not-allowed ml-auto btn-academic-active touch-target shadow-blue-500/10" :class="selectedResponse.status === 'graded' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-emerald-600 hover:bg-emerald-700'"><Loader2 v-if="isSubmitting" class="w-4 h-4 animate-spin" /><RefreshCw v-else-if="selectedResponse.status === 'graded'" class="w-4 h-4" /><Send v-else class="w-4 h-4" />{{ isSubmitting ? '送出中...' : (selectedResponse.status === 'graded' ? '🔄 更新批改成績' : '✅ 確認送出成績') }}</button>
+                  <button @click="submitGrading" :disabled="isSubmitting || score === null || score === ''" class="flex items-center gap-2 px-5 py-2.5 text-white rounded-xl transition-smooth font-bold text-sm shadow-md disabled:opacity-50 disabled:cursor-not-allowed ml-auto btn-academic-active touch-target shadow-blue-500/10" :class="selectedResponse.status === 'graded' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-emerald-600 hover:bg-emerald-700'"><Loader2 v-if="isSubmitting" class="w-4 h-4 animate-spin" /><RefreshCw v-else-if="selectedResponse.status === 'graded'" class="w-4 h-4" /><Send v-else class="w-4 h-4" />{{ isSubmitting ? '送出中...' : (selectedResponse.status === 'graded' ? '更新批改成績' : '確認送出成績') }}</button>
                 </div>
               </div>
             </template>
@@ -555,7 +554,6 @@ defineExpose({ fetchResponses })
             <!-- Header bar -->
             <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100 shrink-0 bg-slate-50/50">
               <div class="flex items-center gap-2">
-                <span class="text-base">📝</span>
                 <span class="font-bold text-slate-800 text-sm">批改：{{ selectedResponse.users?.display_name || '學生作答' }}</span>
               </div>
               <button @click="isMobileDrawerActive = false" class="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 touch-target flex items-center justify-center btn-academic-active"><X class="w-5 h-5" /></button>
@@ -565,20 +563,20 @@ defineExpose({ fetchResponses })
             <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4 no-scrollbar">
               <!-- Question Context -->
               <div v-if="selectedResponse.question_bank?.content">
-                <h5 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">📋 題目描述</h5>
+                <h5 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">題目描述</h5>
                 <div class="p-3 bg-slate-50 border border-slate-100 rounded-xl text-slate-700 text-xs font-semibold leading-relaxed">{{ selectedResponse.question_bank.content }}</div>
               </div>
 
               <!-- Student answer -->
               <div>
-                <h5 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">✍️ 學生回答</h5>
+                <h5 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">學生回答</h5>
                 <div class="p-3 bg-blue-50/50 border border-blue-100 rounded-xl text-slate-800 text-xs font-semibold leading-relaxed">{{ selectedResponse.answer_text || '（無作答內容）' }}</div>
               </div>
 
               <!-- AI Rubrics -->
               <div>
                 <div class="flex items-center justify-between mb-1.5">
-                  <h5 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📐 評分細則</h5>
+                  <h5 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">評分細則</h5>
                   <button @click="updateRubric" class="text-[10px] font-bold text-purple-600 bg-purple-50 border border-purple-100 px-2 py-0.5 rounded">{{ isUpdatingRubric ? '同步中' : '同步標準' }}</button>
                 </div>
                 <textarea v-model="editableRubric" rows="2" class="w-full p-2.5 border border-purple-100 rounded-xl bg-purple-50/20 text-xs font-semibold text-slate-700 outline-none leading-relaxed resize-none"></textarea>
@@ -611,9 +609,9 @@ defineExpose({ fetchResponses })
 
             <!-- Drawer Footer (Sticky at bottom of drawer) -->
             <div class="p-4 bg-slate-50 border-t border-slate-100 flex gap-2 shrink-0 pb-safe-bottom">
-              <button @click="handleAIAssist" :disabled="isAILoading" class="flex-1 flex items-center justify-center gap-1.5 py-3 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-xl text-xs font-bold btn-academic-active touch-target disabled:opacity-50"><Loader2 v-if="isAILoading" class="w-4.5 h-4.5 animate-spin" /><span v-else>🤖 AI 輔助</span></button>
+              <button @click="handleAIAssist" :disabled="isAILoading" class="flex-1 flex items-center justify-center gap-1.5 py-3 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-xl text-xs font-bold btn-academic-active touch-target disabled:opacity-50"><Loader2 v-if="isAILoading" class="w-4.5 h-4.5 animate-spin" /><span v-else>AI 輔助</span></button>
               
-              <button @click="submitGrading" :disabled="isSubmitting || score === null || score === ''" class="flex-1 flex items-center justify-center gap-1.5 py-3 text-white rounded-xl text-xs font-bold btn-academic-active touch-target disabled:opacity-50" :class="selectedResponse.status === 'graded' ? 'bg-blue-600' : 'bg-emerald-600'"><Loader2 v-if="isSubmitting" class="w-4.5 h-4.5 animate-spin" /><span v-else>✅ 送出批改</span></button>
+              <button @click="submitGrading" :disabled="isSubmitting || score === null || score === ''" class="flex-1 flex items-center justify-center gap-1.5 py-3 text-white rounded-xl text-xs font-bold btn-academic-active touch-target disabled:opacity-50" :class="selectedResponse.status === 'graded' ? 'bg-blue-600' : 'bg-emerald-600'"><Loader2 v-if="isSubmitting" class="w-4.5 h-4.5 animate-spin" /><span v-else>送出批改</span></button>
             </div>
           </div>
         </div>
@@ -641,18 +639,18 @@ defineExpose({ fetchResponses })
         <div class="w-1/3 flex flex-col">
           <div class="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col overflow-hidden">
             <div class="flex border-b border-gray-200">
-              <button @click="switchTab('pending')" class="flex-1 py-2.5 text-sm font-medium text-center transition-colors relative" :class="currentTab === 'pending' ? 'text-indigo-700 bg-indigo-50/60' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'">📋 待批改<div v-if="currentTab === 'pending'" class="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600"></div></button>
-              <button @click="switchTab('graded')" class="flex-1 py-2.5 text-sm font-medium text-center transition-colors relative" :class="currentTab === 'graded' ? 'text-green-700 bg-green-50/60' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'">✅ 已批改<div v-if="currentTab === 'graded'" class="absolute bottom-0 left-0 right-0 h-0.5 bg-green-600"></div></button>
+              <button @click="switchTab('pending')" class="flex-1 py-2.5 text-sm font-medium text-center transition-colors relative" :class="currentTab === 'pending' ? 'text-indigo-700 bg-indigo-50/60' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'">待批改<div v-if="currentTab === 'pending'" class="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600"></div></button>
+              <button @click="switchTab('graded')" class="flex-1 py-2.5 text-sm font-medium text-center transition-colors relative" :class="currentTab === 'graded' ? 'text-green-700 bg-green-50/60' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'">已批改<div v-if="currentTab === 'graded'" class="absolute bottom-0 left-0 right-0 h-0.5 bg-green-600"></div></button>
             </div>
 
             <div v-if="currentTab === 'pending'" class="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
               <button @click="handleBatchGrading" :disabled="pendingResponses.length === 0 || isBatchGrading" class="w-full flex justify-center items-center gap-2 py-2.5 px-3 rounded-lg text-white font-medium transition-all shadow-sm bg-gradient-to-r from-blue-500 relative overflow-hidden" :class="[pendingResponses.length === 0 ? 'to-blue-400 opacity-60 cursor-not-allowed' : 'to-purple-600 hover:from-blue-600 hover:to-purple-700 hover:shadow-md hover:-translate-y-0.5']">
                 <template v-if="isBatchGrading">
                   <Loader2 class="w-4 h-4 animate-spin relative z-10" />
-                  <span class="relative z-10 text-sm">⏳ 自動批改中... ({{ batchProgress.current }}/{{ batchProgress.total }})</span>
+                  <span class="relative z-10 text-sm">自動批改中... ({{ batchProgress.current }}/{{ batchProgress.total }})</span>
                   <div class="absolute left-0 top-0 h-full bg-white/20 transition-all duration-300" :style="{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }"></div>
                 </template>
-                <template v-else><span class="text-base relative z-10">🪄</span><span class="text-sm relative z-10">AI 一鍵全自動批改</span></template>
+                <template v-else><span class="text-sm relative z-10">AI 一鍵全自動批改</span></template>
               </button>
             </div>
 
@@ -690,7 +688,7 @@ defineExpose({ fetchResponses })
                 </div>
 
                 <div v-if="selectedResponse.question_bank?.content || getQuestionImageUrls(selectedResponse.question_bank).length > 0">
-                  <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">📋 題目內容</h4>
+                  <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">題目內容</h4>
                   <div v-if="selectedResponse.question_bank?.content" class="p-4 bg-gray-50 rounded-lg text-gray-700 whitespace-pre-wrap text-sm leading-relaxed">{{ selectedResponse.question_bank.content }}</div>
                   <div v-if="getQuestionImageUrls(selectedResponse.question_bank).length > 0" class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <img
@@ -703,7 +701,7 @@ defineExpose({ fetchResponses })
                     />
                   </div>
                 </div>
-                <div><h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">✍️ 學生作答</h4><div class="p-4 bg-blue-50/60 rounded-lg text-gray-800 whitespace-pre-wrap text-sm leading-relaxed border border-blue-100">{{ selectedResponse.answer_text || '（無作答內容）' }}</div></div>
+                <div><h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">學生作答</h4><div class="p-4 bg-blue-50/60 rounded-lg text-gray-800 whitespace-pre-wrap text-sm leading-relaxed border border-blue-100">{{ selectedResponse.answer_text || '（無作答內容）' }}</div></div>
                 <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div class="p-3 rounded-lg border border-gray-200 bg-white">
                     <p class="text-xs font-semibold text-gray-500 mb-1">作答反應時間</p>
@@ -720,8 +718,8 @@ defineExpose({ fetchResponses })
                 </div>
                 <div>
                   <div class="flex items-center justify-between mb-2">
-                    <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">📐 評分標準</h4>
-                    <button @click="updateRubric" :disabled="isUpdatingRubric" class="flex items-center gap-1.5 px-3 py-1 bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors rounded text-xs font-semibold disabled:opacity-50"><Loader2 v-if="isUpdatingRubric" class="w-3 h-3 animate-spin" /><span v-else>💾</span>{{ isUpdatingRubric ? '更新中' : '更新標準' }}</button>
+                    <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">評分標準</h4>
+                    <button @click="updateRubric" :disabled="isUpdatingRubric" class="flex items-center gap-1.5 px-3 py-1 bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors rounded text-xs font-semibold disabled:opacity-50"><Loader2 v-if="isUpdatingRubric" class="w-3 h-3 animate-spin" />{{ isUpdatingRubric ? '更新中' : '更新標準' }}</button>
                   </div>
                   <textarea v-model="editableRubric" rows="4" placeholder="請輸入評分標準..." class="w-full px-3 py-2 border border-purple-200 rounded-lg bg-purple-50 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition resize-none text-sm text-gray-800 leading-relaxed"></textarea>
                 </div>
@@ -734,8 +732,8 @@ defineExpose({ fetchResponses })
                 </div>
 
                 <div class="flex items-center gap-3 pt-2">
-                  <button @click="handleAIAssist" :disabled="isAILoading" class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-500 text-white rounded-lg hover:from-purple-600 hover:to-indigo-600 transition-all disabled:opacity-60 disabled:cursor-not-allowed shadow-sm hover:shadow-md"><Loader2 v-if="isAILoading" class="w-4 h-4 animate-spin" /><Bot v-else class="w-4 h-4" />{{ isAILoading ? 'AI 分析中...' : ' AI 輔助批改' }}</button>
-                  <button @click="submitGrading" :disabled="isSubmitting || score === null || score === ''" class="flex items-center gap-2 px-5 py-2.5 text-white rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-sm hover:shadow-md ml-auto" :class="selectedResponse.status === 'graded' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'"><Loader2 v-if="isSubmitting" class="w-4 h-4 animate-spin" /><RefreshCw v-else-if="selectedResponse.status === 'graded'" class="w-4 h-4" /><Send v-else class="w-4 h-4" />{{ isSubmitting ? '送出中...' : (selectedResponse.status === 'graded' ? '🔄 更新成績' : '✅ 確認送出') }}</button>
+                  <button @click="handleAIAssist" :disabled="isAILoading" class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-500 text-white rounded-lg hover:from-purple-600 hover:to-indigo-600 transition-all disabled:opacity-60 disabled:cursor-not-allowed shadow-sm hover:shadow-md"><Loader2 v-if="isAILoading" class="w-4 h-4 animate-spin" /><Bot v-else class="w-4 h-4" />{{ isAILoading ? 'AI 分析中...' : 'AI 輔助批改' }}</button>
+                  <button @click="submitGrading" :disabled="isSubmitting || score === null || score === ''" class="flex items-center gap-2 px-5 py-2.5 text-white rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-sm hover:shadow-md ml-auto" :class="selectedResponse.status === 'graded' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'"><Loader2 v-if="isSubmitting" class="w-4 h-4 animate-spin" /><RefreshCw v-else-if="selectedResponse.status === 'graded'" class="w-4 h-4" /><Send v-else class="w-4 h-4" />{{ isSubmitting ? '送出中...' : (selectedResponse.status === 'graded' ? '更新成績' : '確認送出') }}</button>
                 </div>
               </div>
             </template>

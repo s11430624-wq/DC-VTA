@@ -124,7 +124,7 @@ onMounted(() => {
                   class="px-2.5 py-1 text-[11px] sm:text-xs font-bold rounded-md transition-smooth btn-academic-active"
                   :class="uiVariant === 'classic' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
                 >
-                  經典版
+                  原版
                 </button>
                 <button 
                   @click="setUiVariant('redesigned')" 

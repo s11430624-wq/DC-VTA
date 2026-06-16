@@ -217,7 +217,7 @@ defineExpose({ fetchQuestions })
               </button>
             </nav>
             <div class="h-px bg-slate-150 my-4"></div>
-            <div class="px-3 py-1 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">自動批改系統</div>
+            <div class="px-3 py-1 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">自動批改工具</div>
             <a
               href="https://criterion-ai.vercel.app/"
               target="_blank"
@@ -225,7 +225,7 @@ defineExpose({ fetchQuestions })
             >
               <div class="flex items-center gap-3">
                 <ClipboardCheck class="w-4 h-4 text-emerald-500 shrink-0" />
-                <span>CriterionAI 系統</span>
+                <span>CriterionAI 工具</span>
               </div>
               <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"></path>
@@ -303,7 +303,7 @@ defineExpose({ fetchQuestions })
                 >
                   <div class="flex items-center gap-3.5">
                     <ClipboardCheck class="w-5 h-5 text-emerald-500 shrink-0" />
-                    <span>CriterionAI 系統</span>
+                    <span>CriterionAI 工具</span>
                   </div>
                   <svg class="w-4 h-4 text-emerald-500 shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"></path>
@@ -383,9 +383,9 @@ defineExpose({ fetchQuestions })
                 v-model="sortBy" 
                 class="px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-smooth text-sm font-semibold text-slate-700 shadow-academic"
               >
-                <option value="newest">🆕 最新建立 (Newest Created)</option>
-                <option value="oldest">⏳ 最舊建立 (Oldest Created)</option>
-                <option value="latest-sent">⚡ 最近發送 (Latest Sent)</option>
+                <option value="newest">最新建立 (Newest Created)</option>
+                <option value="oldest">最舊建立 (Oldest Created)</option>
+                <option value="latest-sent">最近發送 (Latest Sent)</option>
               </select>
             </div>
 
@@ -558,7 +558,7 @@ defineExpose({ fetchQuestions })
           </button>
           <a href="https://criterion-ai.vercel.app/" target="_blank" class="flex-1 px-3 sm:px-6 py-3 sm:py-4 text-center font-medium transition-colors border-b-2 border-transparent text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50/50 flex items-center justify-center gap-1 sm:gap-2">
             <ClipboardCheck class="w-4 h-4 sm:w-5 sm:h-5 text-emerald-500" />
-            <span class="text-sm sm:text-base whitespace-nowrap">CriterionAI 系統</span>
+            <span class="text-sm sm:text-base whitespace-nowrap">CriterionAI 工具</span>
             <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0 inline" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"></path>
             </svg>
